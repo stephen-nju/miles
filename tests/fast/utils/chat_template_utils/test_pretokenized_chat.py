@@ -67,29 +67,22 @@ _ORIGINAL_TEMPLATES = {
 # ===========================================================================
 
 from miles.utils.test_utils.chat_template_verify import (  # noqa: E402
-    INTERMEDIATE_SYSTEM_CASES as _RAW_INTERMEDIATE_SYSTEM_CASES,
+    INTERMEDIATE_SYSTEM_CASES,
+    INTERMEDIATE_SYSTEM_THINKING_CASES,
+    STANDARD_CASES,
+    THINKING_CASES,
 )
-from miles.utils.test_utils.chat_template_verify import (
-    INTERMEDIATE_SYSTEM_THINKING_CASES as _RAW_INTERMEDIATE_SYSTEM_THINKING_CASES,
-)
-from miles.utils.test_utils.chat_template_verify import STANDARD_CASES, THINKING_CASES
 
 
-def _to_pytest_params(cases, include_tools=True):
+def _to_pytest_params(cases):
     """Convert (name, cls, n, tools) tuples to pytest.param list."""
-    params = []
-    for name, cls, n, tools in cases:
-        if include_tools:
-            params.append(pytest.param(cls, n, tools, id=name))
-        else:
-            params.append(pytest.param(cls, n, tools, id=name))
-    return params
+    return [pytest.param(cls, n, tools, id=name) for name, cls, n, tools in cases]
 
 
-_STANDARD_CASES = _to_pytest_params(STANDARD_CASES)
-_THINKING_CASES = _to_pytest_params(THINKING_CASES)
-_INTERMEDIATE_SYSTEM_CASES = _to_pytest_params(_RAW_INTERMEDIATE_SYSTEM_CASES)
-_INTERMEDIATE_SYSTEM_THINKING_CASES = _to_pytest_params(_RAW_INTERMEDIATE_SYSTEM_THINKING_CASES)
+_STANDARD_PARAMS = _to_pytest_params(STANDARD_CASES)
+_THINKING_PARAMS = _to_pytest_params(THINKING_CASES)
+_INTERMEDIATE_SYSTEM_PARAMS = _to_pytest_params(INTERMEDIATE_SYSTEM_CASES)
+_INTERMEDIATE_SYSTEM_THINKING_PARAMS = _to_pytest_params(INTERMEDIATE_SYSTEM_THINKING_CASES)
 
 # (chat_template, trajectory_cls, pretokenize_n) — original templates that break prefix invariant
 _MISMATCH_CASES = [
@@ -106,32 +99,24 @@ _MISMATCH_CASES = [
     ),
 ]
 
-# Template parametrization lists
-all_template_ids = list(ALL_TEMPLATES.keys())
-all_template_values = list(ALL_TEMPLATES.values())
-thinking_template_ids = list(TEMPLATES_WITH_THINKING.keys())
-thinking_template_values = list(TEMPLATES_WITH_THINKING.values())
 
-# Intermediate-system compatibility matrix for ALL_TEMPLATES.
-INTERMEDIATE_SYSTEM_FORBIDDEN_TEMPLATE_IDS = {"qwen3.5_fixed"}
-INTERMEDIATE_SYSTEM_ALLOWED_TEMPLATE_IDS = set(ALL_TEMPLATES.keys()) - INTERMEDIATE_SYSTEM_FORBIDDEN_TEMPLATE_IDS
+def _template_params(templates: dict[str, str]) -> list:
+    """Convert a {name: template_str} dict to a list of pytest.param(template_str, id=name)."""
+    return [pytest.param(v, id=k) for k, v in templates.items()]
 
-assert INTERMEDIATE_SYSTEM_ALLOWED_TEMPLATE_IDS | INTERMEDIATE_SYSTEM_FORBIDDEN_TEMPLATE_IDS == set(
-    ALL_TEMPLATES.keys()
-)
-assert INTERMEDIATE_SYSTEM_ALLOWED_TEMPLATE_IDS.isdisjoint(INTERMEDIATE_SYSTEM_FORBIDDEN_TEMPLATE_IDS)
 
-intermediate_system_template_ids = [t for t in all_template_ids if t in INTERMEDIATE_SYSTEM_ALLOWED_TEMPLATE_IDS]
-intermediate_system_template_values = [ALL_TEMPLATES[t] for t in intermediate_system_template_ids]
-intermediate_system_thinking_template_ids = [
-    t for t in thinking_template_ids if t in INTERMEDIATE_SYSTEM_ALLOWED_TEMPLATE_IDS
-]
-intermediate_system_thinking_template_values = [ALL_TEMPLATES[t] for t in intermediate_system_thinking_template_ids]
+# Intermediate-system compatibility: only qwen3.5_fixed is known to reject them.
+# test_intermediate_system_probe_matrix locks this set against drift.
+_INTERMEDIATE_SYSTEM_FORBIDDEN = {"qwen3.5_fixed"}
+_INTERMEDIATE_SYSTEM_TEMPLATES = {k: v for k, v in ALL_TEMPLATES.items() if k not in _INTERMEDIATE_SYSTEM_FORBIDDEN}
+_INTERMEDIATE_SYSTEM_THINKING_TEMPLATES = {
+    k: v for k, v in TEMPLATES_WITH_THINKING.items() if k not in _INTERMEDIATE_SYSTEM_FORBIDDEN
+}
 
 
 def _collect_intermediate_system_failures(template_id: str, chat_template: str) -> list[str]:
     failures: list[str] = []
-    for case_name, traj_cls, n, tools in _RAW_INTERMEDIATE_SYSTEM_CASES:
+    for case_name, traj_cls, n, tools in INTERMEDIATE_SYSTEM_CASES:
         result = verify_append_only(chat_template, deepcopy(traj_cls.MESSAGES), n, tools=tools, case_name=case_name)
         if not result.passed:
             failures.append(f"{case_name}: {result.error}")
@@ -139,7 +124,7 @@ def _collect_intermediate_system_failures(template_id: str, chat_template: str) 
     if template_id in TEMPLATES_WITH_THINKING:
         for enable in (True, False):
             suffix = "thinking_on" if enable else "thinking_off"
-            for case_name, traj_cls, n, tools in _RAW_INTERMEDIATE_SYSTEM_THINKING_CASES:
+            for case_name, traj_cls, n, tools in INTERMEDIATE_SYSTEM_THINKING_CASES:
                 full_case_name = f"{case_name}[{suffix}]"
                 result = verify_append_only(
                     chat_template,
@@ -168,8 +153,8 @@ def _format_failure_map(failure_map: dict[str, list[str]]) -> str:
 # ===========================================================================
 
 
-@pytest.mark.parametrize("chat_template", all_template_values, ids=all_template_ids)
-@pytest.mark.parametrize("trajectory_cls,pretokenize_n,tools", _STANDARD_CASES)
+@pytest.mark.parametrize("chat_template", _template_params(ALL_TEMPLATES))
+@pytest.mark.parametrize("trajectory_cls,pretokenize_n,tools", _STANDARD_PARAMS)
 def test_pretokenized_equals_standard(chat_template, trajectory_cls, pretokenize_n, tools):
     """Pretokenized incremental path produces same text as standard full render."""
     assert_pretokenized_equals_standard(
@@ -185,8 +170,8 @@ def test_pretokenized_equals_standard(chat_template, trajectory_cls, pretokenize
 # ===========================================================================
 
 
-@pytest.mark.parametrize("chat_template", thinking_template_values, ids=thinking_template_ids)
-@pytest.mark.parametrize("trajectory_cls,pretokenize_n,tools", _THINKING_CASES)
+@pytest.mark.parametrize("chat_template", _template_params(TEMPLATES_WITH_THINKING))
+@pytest.mark.parametrize("trajectory_cls,pretokenize_n,tools", _THINKING_PARAMS)
 @pytest.mark.parametrize("enable_thinking", [True, False], ids=["thinking_on", "thinking_off"])
 def test_pretokenized_thinking(chat_template, trajectory_cls, pretokenize_n, tools, enable_thinking):
     """Thinking-capable templates work with pretokenized path and enable_thinking flag."""
@@ -207,15 +192,15 @@ def test_pretokenized_thinking(chat_template, trajectory_cls, pretokenize_n, too
 def test_intermediate_system_probe_matrix():
     """Probe ALL_TEMPLATES and lock the allow/forbid intermediate-system matrix."""
     failure_map: dict[str, list[str]] = {}
-    for template_id in all_template_ids:
-        failures = _collect_intermediate_system_failures(template_id, ALL_TEMPLATES[template_id])
+    for template_id, chat_template in ALL_TEMPLATES.items():
+        failures = _collect_intermediate_system_failures(template_id, chat_template)
         if failures:
             failure_map[template_id] = failures
 
     detected_forbidden = set(failure_map.keys())
-    assert detected_forbidden == INTERMEDIATE_SYSTEM_FORBIDDEN_TEMPLATE_IDS, (
+    assert detected_forbidden == _INTERMEDIATE_SYSTEM_FORBIDDEN, (
         f"Intermediate-system forbidden set changed.\n"
-        f"expected={sorted(INTERMEDIATE_SYSTEM_FORBIDDEN_TEMPLATE_IDS)}\n"
+        f"expected={sorted(_INTERMEDIATE_SYSTEM_FORBIDDEN)}\n"
         f"detected={sorted(detected_forbidden)}\n"
         f"{_format_failure_map(failure_map)}"
     )
@@ -223,8 +208,8 @@ def test_intermediate_system_probe_matrix():
     assert any("System message must be at the beginning." in failure for failure in qwen35_failures), qwen35_failures
 
 
-@pytest.mark.parametrize("chat_template", intermediate_system_template_values, ids=intermediate_system_template_ids)
-@pytest.mark.parametrize("trajectory_cls,pretokenize_n,tools", _INTERMEDIATE_SYSTEM_CASES)
+@pytest.mark.parametrize("chat_template", _template_params(_INTERMEDIATE_SYSTEM_TEMPLATES))
+@pytest.mark.parametrize("trajectory_cls,pretokenize_n,tools", _INTERMEDIATE_SYSTEM_PARAMS)
 def test_pretokenized_intermediate_system(chat_template, trajectory_cls, pretokenize_n, tools):
     """Templates in the allowlist support intermediate system messages."""
     assert_pretokenized_equals_standard(
@@ -235,12 +220,8 @@ def test_pretokenized_intermediate_system(chat_template, trajectory_cls, pretoke
     )
 
 
-@pytest.mark.parametrize(
-    "chat_template",
-    intermediate_system_thinking_template_values,
-    ids=intermediate_system_thinking_template_ids,
-)
-@pytest.mark.parametrize("trajectory_cls,pretokenize_n,tools", _INTERMEDIATE_SYSTEM_THINKING_CASES)
+@pytest.mark.parametrize("chat_template", _template_params(_INTERMEDIATE_SYSTEM_THINKING_TEMPLATES))
+@pytest.mark.parametrize("trajectory_cls,pretokenize_n,tools", _INTERMEDIATE_SYSTEM_THINKING_PARAMS)
 @pytest.mark.parametrize("enable_thinking", [True, False], ids=["thinking_on", "thinking_off"])
 def test_pretokenized_intermediate_system_thinking(
     chat_template, trajectory_cls, pretokenize_n, tools, enable_thinking
@@ -282,7 +263,7 @@ def test_original_template_prefix_mismatch(chat_template, trajectory_cls, pretok
 _CROSS_USER_THINKING_N = last_user_index(MultiUserTurnThinkingTrajectory.MESSAGES)
 
 
-@pytest.mark.parametrize("chat_template", thinking_template_values, ids=thinking_template_ids)
+@pytest.mark.parametrize("chat_template", _template_params(TEMPLATES_WITH_THINKING))
 @pytest.mark.parametrize("enable_thinking", [True, False], ids=["thinking_on", "thinking_off"])
 def test_cross_user_turn_thinking_prefix_mismatch(chat_template, enable_thinking):
     """Thinking templates compress reasoning_content from earlier user turns, breaking prefix invariant."""

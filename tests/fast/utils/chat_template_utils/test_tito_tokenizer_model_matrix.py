@@ -89,38 +89,29 @@ class AppendCase:
     required_contents: tuple[str, ...] = ()
 
 
-def _single_tool_case() -> AppendCase:
-    return AppendCase(
+_APPEND_CASES = [
+    AppendCase(
         name="single_tool",
         old_messages=deepcopy(SingleToolTrajectory.MESSAGES[:3]),
         appended_messages=deepcopy([SingleToolTrajectory.MESSAGES[3]]),
         tools=deepcopy(SingleToolTrajectory.TOOLS),
         required_contents=(SingleToolTrajectory.MESSAGES[3]["content"],),
-    )
-
-
-def _single_user_case() -> AppendCase:
-    return AppendCase(
+    ),
+    AppendCase(
         name="single_user",
         old_messages=deepcopy(MultiUserTurnThinkingTrajectory.MESSAGES[:5]),
         appended_messages=deepcopy([MultiUserTurnThinkingTrajectory.MESSAGES[5]]),
         tools=deepcopy(MultiUserTurnThinkingTrajectory.TOOLS),
         required_contents=(MultiUserTurnThinkingTrajectory.MESSAGES[5]["content"],),
-    )
-
-
-def _single_system_case() -> AppendCase:
-    return AppendCase(
+    ),
+    AppendCase(
         name="single_system",
         old_messages=deepcopy(SimpleNoToolTrajectory.MESSAGES),
         appended_messages=[{"role": "system", "content": "Please answer in one short sentence."}],
         tools=None,
         required_contents=("Please answer in one short sentence.",),
-    )
-
-
-def _alternating_user_tool_case() -> AppendCase:
-    return AppendCase(
+    ),
+    AppendCase(
         name="alternating_user_tool",
         old_messages=deepcopy(SingleToolThinkingTrajectory.MESSAGES[:3]),
         appended_messages=[
@@ -140,28 +131,14 @@ def _alternating_user_tool_case() -> AppendCase:
             '{"temperature": 30, "condition": "cloudy"}',
             "And tell me the date as well.",
         ),
-    )
+    ),
+]
 
-
-_SINGLE_APPEND_CASES = [_single_tool_case(), _single_user_case(), _single_system_case()]
-_ALTERNATING_CASES = [_alternating_user_tool_case()]
-
-
-def _iter_single_append_params() -> list[pytest.ParamSpecArgs]:
-    params = []
-    for model_name in _TITO_TEST_MODELS:  # excludes _TITO_EXCLUDED_MODELS
-        for case in _SINGLE_APPEND_CASES:
-            if case.name == "single_system" and model_name in _NO_SYSTEM_APPEND_MODELS:
-                continue
-            params.append(pytest.param(model_name, case, id=f"{case.name}-{model_name}"))
-    return params
-
-
-_SINGLE_APPEND_PARAMS = _iter_single_append_params()
-_ALTERNATING_PARAMS = [
+_ALL_PARAMS = [
     pytest.param(model_name, case, id=f"{case.name}-{model_name}")
-    for model_name in _TITO_TEST_MODELS  # excludes _TITO_EXCLUDED_MODELS
-    for case in _ALTERNATING_CASES
+    for model_name in _TITO_TEST_MODELS
+    for case in _APPEND_CASES
+    if not (case.name == "single_system" and model_name in _NO_SYSTEM_APPEND_MODELS)
 ]
 
 
@@ -186,10 +163,6 @@ def _get_tokenizer(model_name: str) -> AutoTokenizer:
     return _TOK_CACHE[cache_key]
 
 
-def _get_assistant_start_str(model_name: str) -> str:
-    return _ASSISTANT_START_BY_MODEL[model_name]
-
-
 def _get_tito(model_name: str, tokenizer: AutoTokenizer) -> TITOTokenizer:
     tokenizer_type = _resolve_tito_type(model_name)
     kwargs = {
@@ -197,7 +170,7 @@ def _get_tito(model_name: str, tokenizer: AutoTokenizer) -> TITOTokenizer:
         "allowed_append_roles": _ALLOWED_APPEND_ROLES,
     }
     if tokenizer_type == TITOTokenizerType.DEFAULT:
-        kwargs["assistant_start_str"] = _get_assistant_start_str(model_name)
+        kwargs["assistant_start_str"] = _ASSISTANT_START_BY_MODEL[model_name]
     return get_tito_tokenizer(tokenizer, **kwargs)
 
 
@@ -247,15 +220,8 @@ def _run_case(model_name: str, case: AppendCase) -> tuple[TITOTokenizer, list[in
     return tito, merged, expected, incremental_text
 
 
-@pytest.mark.parametrize(("model_name", "case"), _SINGLE_APPEND_PARAMS)
-def test_single_append_cases_preserve_non_assistant_content(model_name: str, case: AppendCase):
-    tito, merged, expected, incremental_text = _run_case(model_name, case)
-    _assert_only_assistant_mismatches(tito, expected, merged)
-    _assert_contents_in_order(incremental_text, case.required_contents, model_name=model_name, case_name=case.name)
-
-
-@pytest.mark.parametrize(("model_name", "case"), _ALTERNATING_PARAMS)
-def test_alternating_user_tool_appends_preserve_non_assistant_content(model_name: str, case: AppendCase):
+@pytest.mark.parametrize(("model_name", "case"), _ALL_PARAMS)
+def test_appended_non_assistant_content_preserved(model_name: str, case: AppendCase):
     tito, merged, expected, incremental_text = _run_case(model_name, case)
     _assert_only_assistant_mismatches(tito, expected, merged)
     _assert_contents_in_order(incremental_text, case.required_contents, model_name=model_name, case_name=case.name)
