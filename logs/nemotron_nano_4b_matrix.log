@@ -1,0 +1,33 @@
+Nemotron-3-Nano-4B (dense hybrid Mamba+Attention) — 8xH200 single-node
+=====================================================================
+
+Model: /cluster_public/miles_data/models/NVIDIA-Nemotron-3-Nano-4B-BF16
+Runner: scripts/run-nemotron-3-nano-4b.sh
+Acceptance: train_rollout_logprob_abs_diff < 0.02 across 10 RL steps.
+
+Parallelism cells (all pass)
+----------------------------
+
+  TP=2              0.00973 – 0.01175
+  TP=4              0.00986 – 0.01174
+  PP=2              0.00994 – 0.01176   exercises bridge pp_group unwrap shim
+  CP=2              0.00980 – 0.01188
+  TP=2 x PP=2       0.00981 – 0.01171   exercises both shims (IdentityOp + pp_group)
+
+EP is N/A for the dense 4B model.
+
+Onboarding notes
+----------------
+
+  --kv-channels 128                            HF has explicit head_dim=128;
+                                               hidden 3136 / heads 40 does not
+                                               divide evenly.
+  --untie-embeddings-and-output-weights        HF tie_word_embeddings=False.
+  --attention-backend auto                     flash path was briefly suspected
+                                               during debug; keep auto for now.
+  no --recompute-granularity/method needed     4B fits on TP=2 H200 easily.
+  EVAL_ARGS cleared                            avoids 'eval_datasets required
+                                               when eval_interval set'.
+
+The runner script parks on the TP=2 x PP=2 cell. Flip the PERF_ARGS block +
+OUT_DIR suffix to rerun a specific cell.

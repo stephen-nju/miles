@@ -1,0 +1,68 @@
+Nemotron-3-Nano-30B-A3B (MoE hybrid Mamba+Attention) — 8xH200 single-node
+========================================================================
+
+Model: /cluster_public/miles_data/models/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
+Runner: scripts/run-nemotron-3-nano-30b-a3b.sh
+Acceptance: train_rollout_logprob_abs_diff < 0.02 across RL steps.
+
+MoE config: 128 routed experts top-6, 1 shared expert, sigmoid routing with
+expert_bias aux-free balancing, DeepSeek-V3-style routed_scaling_factor=2.5.
+
+Parallelism cells
+-----------------
+
+  TP=2 x EP=4 + SP       10/10  0.01240 – 0.01431   mean ≈ 0.0136
+  PP=2 x EP=4            10/10  0.01262 – 0.01436   mean ≈ 0.0135
+  CP=2 x EP=4             5/5   0.01322 – 0.01428   early-stopped once stable
+  EP=4 (pure)             5/5   0.01304 – 0.01438   early-stopped once stable
+  TP=2 x PP=2 x EP=2 + SP 5/5   0.01312 – 0.01436   early-stopped once stable
+  TP=4 x EP=2            skipped — 15.2B params/rank + sglang colocate exceeds
+                         140 GB on H200 (model-too-big, not a correctness issue)
+
+Memory knobs required for MoE + sglang colocate on 8xH200
+---------------------------------------------------------
+
+  --rollout-max-response-len   1024        (from 4096; ~4x activation memory)
+  --rollout-batch-size         32
+  --n-samples-per-prompt       4           (from 8)
+  --global-batch-size          128         (from 256)
+  --max-tokens-per-gpu         1024
+  --log-probs-chunk-size       128
+
+Correctness debugging journey (why step 0 was off by ~0.28)
+-----------------------------------------------------------
+
+Initial symptom: first 30B-A3B run had train_rollout_logprob_abs_diff ~0.285
+across every step, ~14x the 0.02 bar, while Nano-4B dense passed cleanly.
+
+Things that were NOT the cause (ruled out, all left no effect on the diff):
+
+  --moe-router-num-groups 8 --moe-router-group-topk 1
+  --moe-router-topk-scaling-factor 2.5 --moe-router-pre-softmax (via CLI)
+  --moe-router-load-balancing-type none + --moe-aux-loss-coeff 0
+  --moe-router-load-balancing-type seq_aux_loss + bias-update-rate 0
+  router expert_bias load (verified via one-shot diag print,
+    abs.max=56.789, matches HF's ~57-magnitude aux-free balance bias)
+  hybrid_override_pattern replay alignment (moe_layer_freq mirror into
+    provider so replay_utils registers once per real MoE layer)
+
+Root cause:
+
+  miles' generic model_provider.py only copies a small subset of moe_* CLI
+  args to the Megatron provider after AutoBridge.to_megatron_provider().
+  The critical moe_router_topk_scaling_factor (=2.5 for Nemotron-H) was
+  never propagated, so Megatron's forward scaled routed-expert output by
+  1.0 instead of 2.5. Compounded across 22 MoE layers this was a ~500x
+  probability miscalibration per token even with bit-exact loaded weights.
+
+Fix:
+
+  In the NemotronHBridge provider shim (miles/backends/megatron_utils/
+  __init__.py), pull routed_scaling_factor, n_group, topk_group straight
+  out of the HF config and force moe_router_dtype=fp32.
+
+Validation (scripts/tools/debug_nemotron_moe_weight_check.py, single-rank):
+
+  before shim:  Megatron vs HF per-token logprob mean=2.08  max=6.21
+  after  shim:  Megatron vs HF per-token logprob mean=0.006 max=0.022
+                (matches Nano-4B dense's 0.01 band)
