@@ -74,6 +74,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # Rollout precision
     rollout_fp8: bool = False
     rollout_health_check_first_wait: int = 1800
+    sglang_mem_fraction_static: float = 0.80
+    # Set PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True on sglang workers to
+    # reduce fragmentation-induced OOMs during NCCL weight broadcasts.
+    sglang_expandable_segments: bool = True
 
     # Agent settings
     agent_server_url: str = os.environ.get("AGENT_SERVER_URL", "http://ts-egress-aws-agent-server:8080")
@@ -257,7 +261,7 @@ def execute(args: ScriptArgs):
 
     sglang_args = (
         f"--rollout-num-gpus-per-engine {sglang_world_size} "
-        "--sglang-mem-fraction-static 0.80 "
+        f"--sglang-mem-fraction-static {args.sglang_mem_fraction_static} "
         f"--sglang-tp-size {sglang_world_size} "
         f"--sglang-ep-size {sglang_world_size} "
         "--sglang-enable-dp-attention "
@@ -274,6 +278,8 @@ def execute(args: ScriptArgs):
         f"{sglang_p2p_extra}"
     )
     sglang_extra_env_vars: dict[str, str] = {}
+    if args.sglang_expandable_segments:
+        sglang_extra_env_vars["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
     agent_args = (
         "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate "
