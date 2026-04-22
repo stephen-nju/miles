@@ -195,22 +195,26 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
     def _mtp_experts_fused(self) -> bool:
         """Detect whether MTP expert weights are stored in fused 3-D tensors.
 
-        Qwen3.5 MoE-A3B: unfused per-expert tensors.
+        Qwen3.5 MoE-A3B: unfused per-expert tensors (keys end in ``.weight``).
         Qwen3.6 MoE-A3B: fused ``gate_up_proj`` / ``down_proj`` tensors.
-        Resolved from ``safetensor_io.index`` on first call.
+        Resolved from ``safetensor_io.index`` on first call; result is only
+        cached once ``safetensor_io`` is available, so early pre-init access
+        (e.g. from tests that instantiate via ``__new__``) does not lock in
+        a wrong answer.
         """
         cached = getattr(self, "_mtp_experts_fused_cached", None)
         if cached is not None:
             return cached
-        fused = False
         io = getattr(self, "safetensor_io", None)
-        if io is not None and getattr(io, "index", None):
-            for k in io.index:
-                if "mtp.layers." in k and "mlp.experts." in k and (
-                    k.endswith("gate_up_proj") or k.endswith("down_proj")
-                ) and "." + "gate_proj" not in k and "." + "up_proj" not in k:
-                    fused = True
-                    break
+        index = getattr(io, "index", None) if io is not None else None
+        if not index:
+            return False
+        fused = any(
+            "mtp.layers." in k
+            and "mlp.experts." in k
+            and (k.endswith("gate_up_proj") or k.endswith("down_proj"))
+            for k in index
+        )
         self._mtp_experts_fused_cached = fused
         return fused
 
