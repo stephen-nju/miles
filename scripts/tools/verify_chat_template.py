@@ -45,6 +45,29 @@ def _load_template_from_model(model_id: str, *, autofix: bool) -> tuple[str, str
     return load_hf_chat_template(model_id), f"HuggingFace: {model_id}"
 
 
+def _parse_chat_template_kwargs(pairs: list[str]) -> dict:
+    """Parse ``KEY=VAL`` CLI args into a kwargs dict.
+
+    ``true`` / ``false`` (case-insensitive) → Python bool; everything else is
+    passed through as a string.  A template that genuinely needs the literal
+    string ``"true"`` as a kwarg value has no current use case in this repo;
+    add a JSON variant if that ever changes.
+    """
+    out: dict = {}
+    for pair in pairs:
+        if "=" not in pair:
+            raise SystemExit(f"--chat-template-kwargs expected KEY=VAL; got {pair!r}")
+        key, _, raw = pair.partition("=")
+        lowered = raw.lower()
+        if lowered == "true":
+            out[key] = True
+        elif lowered == "false":
+            out[key] = False
+        else:
+            out[key] = raw
+    return out
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Verify that a chat template is append-only after last user message.",
@@ -92,8 +115,22 @@ def main() -> int:
             "Default: off."
         ),
     )
+    parser.add_argument(
+        "--chat-template-kwargs",
+        nargs="+",
+        default=[],
+        metavar="KEY=VAL",
+        help=(
+            "Extra kwargs threaded into the chat template on every render "
+            "(e.g. 'clear_thinking=false' for GLM).  Values 'true'/'false' "
+            "(case-insensitive) are parsed as bool; everything else is passed "
+            "as a string."
+        ),
+    )
 
     args = parser.parse_args()
+
+    extra_template_kwargs = _parse_chat_template_kwargs(args.chat_template_kwargs)
 
     # ── Load template ──────────────────────────────────────────────────
     if args.template:
@@ -111,6 +148,8 @@ def main() -> int:
     print(f"Template source:       {source_desc}")
     print(f"Allowed append roles:  {sorted(allowed_roles)}")
     print(f"Thinking mode:         {args.thinking}")
+    if extra_template_kwargs:
+        print(f"Template kwargs:       {extra_template_kwargs}")
     print(f"Selected trajectories: {len(selected)} of {len(ALL_CASES)} (after filtering)")
     print()
 
@@ -132,6 +171,7 @@ def main() -> int:
         chat_template,
         allowed_append_roles=allowed_roles,
         thinking=args.thinking,
+        extra_template_kwargs=extra_template_kwargs,
     )
 
     # ── Print results ──────────────────────────────────────────────────

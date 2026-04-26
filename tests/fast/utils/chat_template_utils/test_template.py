@@ -26,7 +26,7 @@ from transformers import AutoTokenizer
 
 from miles.utils.chat_template_utils.autofix import try_get_fixed_chat_template
 from miles.utils.chat_template_utils.template import apply_chat_template
-from miles.utils.test_utils.chat_template_verify import CaseSpec, expand_runs
+from miles.utils.test_utils.chat_template_verify import CaseSpec, expand_runs, format_case_id
 from miles.utils.test_utils.mock_trajectories import SimpleNoToolTrajectory, SingleToolTrajectory
 
 # ---------------------------------------------------------------------------
@@ -110,18 +110,6 @@ _MODELS: list[tuple[str, bool, bool, frozenset[str]]] = [
 ]
 
 
-def _kwargs_to_id(kwargs: dict) -> str:
-    if not kwargs:
-        return "default"
-    parts = []
-    for k, v in sorted(kwargs.items()):
-        if isinstance(v, bool):
-            parts.append(f"{k}_{'on' if v else 'off'}")
-        else:
-            parts.append(f"{k}={v}")
-    return "-".join(parts)
-
-
 def _build_align_params():
     params = []
     for model_id, supports_thinking, use_fixed, allowed_roles in _MODELS:
@@ -134,7 +122,7 @@ def _build_align_params():
             # Out of scope for the alignment test.
             if case.traj_cls is SimpleNoToolTrajectory:
                 continue
-            ident = f"{short}-{case.case_name}-{_kwargs_to_id(kwargs)}"
+            ident = f"{short}-{format_case_id(case, kwargs)}"
             params.append(pytest.param(model_id, use_fixed, case, kwargs, id=ident))
     return params
 
@@ -149,6 +137,10 @@ def _per_model_params():
 
 
 def _assert_aligned(tokenizer, case: CaseSpec, kwargs: dict, chat_template: str | None):
+    # ``kwargs`` are template kwargs (e.g. ``enable_thinking``, ``clear_thinking``)
+    # produced by ``expand_runs`` — both ``sglang_prompt_ids`` (via
+    # ``chat_template_kwargs``) and ``apply_chat_template`` (via ``**template_kwargs``)
+    # route them into jinja.  Don't put non-template kwargs in here.
     extra = {"chat_template": chat_template} if chat_template else {}
     expected = sglang_prompt_ids(tokenizer, case.traj_cls.MESSAGES, case.traj_cls.TOOLS, **kwargs, **extra)
     actual = apply_chat_template(

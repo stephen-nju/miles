@@ -17,6 +17,7 @@ from miles.utils.test_utils.chat_template_verify import (
     CaseSpec,
     assert_pretokenized_equals_standard,
     expand_runs,
+    format_case_id,
     simulate_pretokenized_path,
 )
 from miles.utils.test_utils.mock_trajectories import (
@@ -91,18 +92,6 @@ _ORIGINAL_TEMPLATES = {
 }
 
 
-def _kwargs_to_id(kwargs: dict) -> str:
-    if not kwargs:
-        return "default"
-    parts = []
-    for k, v in sorted(kwargs.items()):
-        if isinstance(v, bool):
-            parts.append(f"{k}_{'on' if v else 'off'}")
-        else:
-            parts.append(f"{k}={v}")
-    return "-".join(parts)
-
-
 def _build_pretokenized_params():
     params = []
     for name, content, supports_thinking, allowed_roles, extra_kwargs in _TEMPLATES:
@@ -111,7 +100,7 @@ def _build_pretokenized_params():
             allowed_append_roles=allowed_roles,
             extra_template_kwargs=extra_kwargs,
         ):
-            ident = f"{name}-{case.case_name}-{_kwargs_to_id(kwargs)}"
+            ident = f"{name}-{format_case_id(case, kwargs)}"
             params.append(pytest.param(content, case, kwargs, id=ident))
     return params
 

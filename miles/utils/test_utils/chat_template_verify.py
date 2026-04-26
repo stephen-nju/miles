@@ -259,6 +259,47 @@ def filter_cases(
     return out
 
 
+def enable_thinking_variants(thinking: str) -> list[dict]:
+    """Return the list of ``enable_thinking`` kwarg variants to apply per case.
+
+    * ``"off"`` → ``[{}]`` (no ``enable_thinking`` kwarg).
+    * ``"on"``  → ``[{"enable_thinking": True}]``.
+    * ``"both"`` → ``[{"enable_thinking": True}, {"enable_thinking": False}]``.
+
+    Both CLI (:func:`run_all_checks`) and pytest test-id expansion
+    (:func:`expand_runs`) use this to avoid drifting in how the
+    ``enable_thinking`` knob is exercised.
+    """
+    if thinking == "off":
+        return [{}]
+    if thinking == "on":
+        return [{"enable_thinking": True}]
+    if thinking == "both":
+        return [{"enable_thinking": True}, {"enable_thinking": False}]
+    raise ValueError(f"thinking must be one of {THINKING_MODES}; got {thinking!r}")
+
+
+def format_case_id(case: CaseSpec, kwargs: dict) -> str:
+    """Human-readable label for a ``(case, template_kwargs)`` tuple.
+
+    Used for both CLI ``VerifyResult.case_name`` and pytest test ids so the
+    same tuple is identified the same way in both surfaces.  Format:
+
+    * empty kwargs → ``case.case_name``.
+    * otherwise → ``<case.case_name>-<k1>_on/off-<k2>=val`` (keys sorted;
+      bool values emit ``key_on`` / ``key_off``; other values ``key=val``).
+    """
+    if not kwargs:
+        return case.case_name
+    parts: list[str] = []
+    for k, v in sorted(kwargs.items()):
+        if isinstance(v, bool):
+            parts.append(f"{k}_{'on' if v else 'off'}")
+        else:
+            parts.append(f"{k}={v}")
+    return f"{case.case_name}-{'-'.join(parts)}"
+
+
 def expand_runs(
     *,
     supports_thinking: bool,
@@ -279,17 +320,18 @@ def expand_runs(
     * ``extra_template_kwargs``: merged into every yielded kwargs dict —
       used to thread template-specific kwargs like GLM's
       ``clear_thinking=False``.
+
+    Thin shell over :func:`filter_cases` + :func:`enable_thinking_variants`;
+    the CLI path (:func:`run_all_checks`) uses the same helpers so that the
+    expansion semantics cannot drift between pytest and CLI.
     """
     thinking = "both" if supports_thinking else "off"
     roles = allowed_append_roles if allowed_append_roles is not None else frozenset({"tool", "user", "system"})
     extra = extra_template_kwargs or {}
-    selected = filter_cases(ALL_CASES, allowed_append_roles=roles, thinking=thinking)
-    for c in selected:
-        if supports_thinking:
-            for enable in (True, False):
-                yield c, {"enable_thinking": enable, **extra}
-        else:
-            yield c, dict(extra)
+    variants = enable_thinking_variants(thinking)
+    for c in filter_cases(ALL_CASES, allowed_append_roles=roles, thinking=thinking):
+        for variant in variants:
+            yield c, {**variant, **extra}
 
 
 @dataclass
@@ -347,6 +389,7 @@ def run_all_checks(
     *,
     allowed_append_roles: set[str] | frozenset[str] | None = None,
     thinking: str = "off",
+    extra_template_kwargs: dict | None = None,
 ) -> list[VerifyResult]:
     """Run verification cases filtered by *allowed_append_roles* and *thinking*.
 
@@ -356,44 +399,35 @@ def run_all_checks(
     behavior of ``include_intermediate_system=True``).  Trajectories whose
     required roles are not a subset of the allow list are skipped.
 
-    ``thinking``:
+    ``thinking`` selects which ``enable_thinking`` variants are exercised —
+    see :func:`enable_thinking_variants`.  When ``"both"``, **every** selected
+    trajectory (thinking or not) is rerun with ``enable_thinking=True`` and
+    ``enable_thinking=False``, so templates that branch on the flag are
+    validated against non-reasoning input too.
 
-    * ``"off"`` — non-thinking trajectories only (no ``enable_thinking`` kwarg).
-    * ``"on"`` — thinking trajectories with ``enable_thinking=True`` only.
-    * ``"both"`` — non-thinking + thinking trajectories; thinking trajectories
-      are rerun with ``enable_thinking=False`` so templates that branch on the
-      flag are exercised in both directions.  Equivalent to the old
-      ``include_thinking=True``.
+    ``extra_template_kwargs`` is merged into every invocation — use it to
+    thread template-specific kwargs (e.g. GLM's ``clear_thinking=False``)
+    through the CLI.
     """
     if allowed_append_roles is None:
         allowed_append_roles = {"tool", "user", "system"}
+    extra = extra_template_kwargs or {}
 
     selected = filter_cases(ALL_CASES, allowed_append_roles=allowed_append_roles, thinking=thinking)
+    variants = enable_thinking_variants(thinking)
 
     results: list[VerifyResult] = []
     for case in selected:
-        if case.is_thinking:
-            enable_values: tuple[bool, ...] = (True, False) if thinking == "both" else (True,)
-            for enable in enable_values:
-                suffix = "[thinking_on]" if enable else "[thinking_off]"
-                results.append(
-                    verify_append_only(
-                        chat_template,
-                        deepcopy(case.traj_cls.MESSAGES),
-                        case.pretokenize_n,
-                        tools=case.tools,
-                        case_name=case.case_name + suffix,
-                        enable_thinking=enable,
-                    )
-                )
-        else:
+        for variant in variants:
+            kwargs = {**variant, **extra}
             results.append(
                 verify_append_only(
                     chat_template,
                     deepcopy(case.traj_cls.MESSAGES),
                     case.pretokenize_n,
                     tools=case.tools,
-                    case_name=case.case_name,
+                    case_name=format_case_id(case, kwargs),
+                    **kwargs,
                 )
             )
 
