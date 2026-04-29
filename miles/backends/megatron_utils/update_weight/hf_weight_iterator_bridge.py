@@ -1,7 +1,5 @@
 import dataclasses
 
-import torch
-
 from miles.backends.megatron_utils.lora_utils import is_lora_weight_name
 from miles.utils import megatron_bridge_utils
 from miles.utils.iter_utils import chunk_named_params_by_size
@@ -43,15 +41,7 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
             # TODO: verify if postprocess_hf_param is needed for LoRA weights
             def _postprocessed_weights():
                 cached_q_lora_tensors = {}
-                for named_weight in named_weights:
-                    if len(named_weight) == 3:
-                        hf_param_name, weight, megatron_param_name = named_weight
-                    elif len(named_weight) == 2:
-                        hf_param_name, weight = named_weight
-                        megatron_param_name = hf_param_name
-                    else:
-                        raise ValueError(f"Unexpected bridge weight tuple: {named_weight!r}")
-
+                for hf_param_name, weight, megatron_param_name in named_weights:
                     processed_weight = postprocess_hf_param(
                         args=self.args,
                         megatron_param_name=megatron_param_name,
@@ -63,12 +53,7 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
                         converted_named_tensors=[(hf_param_name, processed_weight)],
                         cached_tensors=cached_q_lora_tensors,
                     )
-                    for converted_name, converted_weight in converted_named_params:
-                        if torch.cuda.is_available():
-                            target_device = torch.device("cuda", torch.cuda.current_device())
-                            if converted_weight.device != target_device:
-                                converted_weight = converted_weight.to(target_device, non_blocking=True)
-                        yield converted_name, converted_weight
+                    yield from converted_named_params
 
             postprocessed = _postprocessed_weights()
             if weight_type == "base":
