@@ -65,6 +65,14 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         tp_size=4,
         cycles=2,
     ),
+    "deepseekv4-tool": ModelConfig(
+        model_name="sgl-project/DeepSeek-V4-Flash-FP8",
+        reasoning_parser="deepseek-v4",
+        tool_call_parser="deepseekv4",
+        tito_model="deepseekv4",
+        allowed_append_roles=("tool",),
+        tp_size=4,
+    ),
 }
 
 # Default CI sweep. ``SESSION_TEST_MODEL_FAMILY`` (single family) overrides
