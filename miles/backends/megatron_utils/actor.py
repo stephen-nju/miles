@@ -78,17 +78,13 @@ class MegatronTrainRayActor(TrainRayActor):
         """
         monkey_patch_torch_dist()
 
-        print(f"[HEAL_DBG] init start: cell={indep_dp_info.cell_index} recv_ckpt_src_rank={recv_ckpt_src_rank}", flush=True)
-
         super().init(args, role, with_ref)
 
-        print(f"[HEAL_DBG] super().init done, calling megatron init", flush=True)
         init(
             args,
             indep_dp_store_addr=self._indep_dp_store_addr,
             indep_dp_info=indep_dp_info,
         )
-        print(f"[HEAL_DBG] megatron init done (incl indep_dp PG configure)", flush=True)
 
         self._ft_actor_executor = FTTestActionActorExecutor.from_args(
             args,
@@ -142,21 +138,17 @@ class MegatronTrainRayActor(TrainRayActor):
 
         checkpointing_context = None
         if recv_ckpt_src_rank is not None:
-            print(f"[HEAL_DBG] calling recv_ckpt from src_rank={recv_ckpt_src_rank}", flush=True)
             ckpt_manager = recv_ckpt(
                 indep_dp=get_parallel_state().indep_dp,
                 src_rank=recv_ckpt_src_rank,
             )
-            print(f"[HEAL_DBG] recv_ckpt done", flush=True)
             checkpointing_context = {"local_checkpoint_manager": ckpt_manager}
         elif args.non_persistent_ckpt_type == "local":
             checkpointing_context = {"local_checkpoint_manager": InMemoryCheckpointManager()}
 
-        print(f"[HEAL_DBG] calling initialize_model_and_optimizer", flush=True)
         (self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id) = initialize_model_and_optimizer(
             args, role, checkpointing_context=checkpointing_context
         )
-        print(f"[HEAL_DBG] initialize_model_and_optimizer done", flush=True)
 
         if args.indep_dp:
             set_indep_dp_operation_timeout(get_parallel_state())
@@ -670,7 +662,6 @@ class MegatronTrainRayActor(TrainRayActor):
         # These states are not handled
         assert not self.args.keep_old_actor
 
-        print(f"[HEAL_DBG] send_ckpt start dst_rank={dst_rank}", flush=True)
         _send_ckpt(
             indep_dp=get_parallel_state().indep_dp,
             model=self.model,
@@ -679,11 +670,9 @@ class MegatronTrainRayActor(TrainRayActor):
             iteration=self._last_rollout_id,
             dst_rank=dst_rank,
         )
-        print(f"[HEAL_DBG] send_ckpt done", flush=True)
         set_indep_dp_operation_timeout(get_parallel_state())
 
     def reconfigure_indep_dp(self, indep_dp_info: IndepDPInfo) -> None:
-        print(f"[HEAL_DBG] reconfigure_indep_dp start quorum_id={indep_dp_info.quorum_id}", flush=True)
         reconfigure_indep_dp_group(
             parallel_state=get_parallel_state(),
             store_addr=self._indep_dp_store_addr,
@@ -691,4 +680,3 @@ class MegatronTrainRayActor(TrainRayActor):
             megatron_rank=dist.get_rank(),
             megatron_world_size=dist.get_world_size(),
         )
-        print(f"[HEAL_DBG] reconfigure_indep_dp done quorum_id={indep_dp_info.quorum_id}", flush=True)
