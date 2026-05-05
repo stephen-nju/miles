@@ -11,7 +11,7 @@ from tqdm import tqdm
 from transformers import AutoConfig
 
 from miles.ray.train_actor import TrainRayActor
-from miles.utils import train_dump_utils, train_metric_utils
+from miles.utils import metric_utils, train_dump_utils
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.memory_utils import clear_memory, print_memory
@@ -411,7 +411,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 return
             self._train_core(rollout_id=rollout_id, rollout_data=rollout_data)
 
-        train_metric_utils.log_perf_data_raw(
+        metric_utils.log_perf_data_raw(
             rollout_id=rollout_id,
             args=self.args,
             is_primary_rank=dist.get_rank() == 0,

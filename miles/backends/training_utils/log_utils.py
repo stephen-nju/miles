@@ -7,7 +7,7 @@ import psutil
 import torch
 import torch.distributed as dist
 
-from miles.utils import train_metric_utils
+from miles.utils import metric_utils
 from miles.utils.flops_utils import calculate_fwd_flops
 from miles.utils.metric_utils import compute_pass_rate, compute_rollout_step
 from miles.utils.types import RolloutBatch
@@ -330,7 +330,7 @@ def log_passrate(rollout_id: int, args: Namespace, rollout_data: RolloutBatch) -
 
 def log_perf_data(rollout_id: int, args: Namespace) -> None:
     parallel_state = get_parallel_state()
-    train_metric_utils.log_perf_data_raw(
+    metric_utils.log_perf_data_raw(
         rollout_id=rollout_id,
         args=args,
         is_primary_rank=(
