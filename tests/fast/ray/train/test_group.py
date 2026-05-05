@@ -14,7 +14,12 @@ pytestmark = pytest.mark.asyncio
 _DUMMY_DATA_PACK = {"data_ref": "data", "sample_indices": [0]}
 
 
-def _make_mock_args(*, indep_dp: bool = True, enable_witness: bool = False) -> MagicMock:
+def _make_mock_args(
+    *,
+    indep_dp: bool = True,
+    enable_witness: bool = False,
+    gpus_per_cell: int = 1,
+) -> MagicMock:
     args = MagicMock()
     args.indep_dp = indep_dp
     args.enable_witness = enable_witness
@@ -24,12 +29,17 @@ def _make_mock_args(*, indep_dp: bool = True, enable_witness: bool = False) -> M
     args.trainer_heartbeat_checker_max_heartbeat_age = 90.0
     args.trainer_heartbeat_checker_first_wait = 300.0
     args.ci_ft_test_actions = None
+    # compute_megatron_world_size_except_dp(args) = TP * PP * CP. Set CP to gpus_per_cell
+    # so RayTrainGroup computes num_cells = total_gpus // gpus_per_cell correctly.
+    args.tensor_model_parallel_size = 1
+    args.pipeline_model_parallel_size = 1
+    args.context_parallel_size = gpus_per_cell
     return args
 
 
 @pytest.fixture(autouse=True)
 def _patch_actor_alloc():
-    """Persist patches across the whole test (incl. healing-path actor reallocations).
+    """Persist allocate_gpus_for_actor patch across the whole test (incl. healing path).
 
     Previously _make_group used `with patch(...)` which expired when _make_group
     returned, so any later `allocate_gpus_for_actor` call during _refresh_cells
@@ -40,13 +50,7 @@ def _patch_actor_alloc():
         actor_count = max(int(gpus_per_cell // num_gpus_per_actor), 1)
         return [DummyTrainActor.remote() for _ in range(actor_count)]
 
-    with patch(
-        "miles.ray.train.group.compute_megatron_world_size_except_dp",
-        return_value=1,
-    ), patch(
-        "miles.ray.train.group.allocate_gpus_for_actor",
-        side_effect=_alloc,
-    ):
+    with patch("miles.ray.train.group.allocate_gpus_for_actor", side_effect=_alloc):
         yield
 
 
@@ -59,7 +63,7 @@ def _make_group(
     """Create a RayTrainGroup through real __init__ with mocked pg and actor factory."""
     total_gpus = num_cells * actor_count_per_cell
     return RayTrainGroup(
-        args=_make_mock_args(indep_dp=True),
+        args=_make_mock_args(indep_dp=True, gpus_per_cell=actor_count_per_cell),
         num_nodes=1,
         num_gpus_per_node=total_gpus,
         pg=(MagicMock(), list(range(total_gpus)), list(range(total_gpus))),
@@ -105,22 +109,17 @@ class TestInit:
         assert len(set(id(h) for h in all_handles)) == 6
 
     def test_single_cell_no_tcp_store(self):
-        with patch(
-            "miles.ray.train.group.compute_megatron_world_size_except_dp",
-            return_value=1,
-        ), patch(
-            "miles.ray.train.group.allocate_gpus_for_actor",
-            side_effect=lambda **kwargs: [DummyTrainActor.remote()],
-        ):
-            group = RayTrainGroup(
-                args=_make_mock_args(indep_dp=False),
-                num_nodes=1,
-                num_gpus_per_node=1,
-                pg=(MagicMock(), [0], [0]),
-                role="actor",
-                with_ref=False,
-                rollout_manager=None,
-            )
+        # indep_dp=False forces single cell regardless of TP/PP/CP product;
+        # the autouse fixture handles allocate_gpus_for_actor.
+        group = RayTrainGroup(
+            args=_make_mock_args(indep_dp=False),
+            num_nodes=1,
+            num_gpus_per_node=1,
+            pg=(MagicMock(), [0], [0]),
+            role="actor",
+            with_ref=False,
+            rollout_manager=None,
+        )
 
         assert len(group._cells) == 1
         assert group._indep_dp_store is None
