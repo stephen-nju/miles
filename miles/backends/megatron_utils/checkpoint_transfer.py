@@ -9,6 +9,8 @@ try:
 except ImportError:
     PGTransport = None
 
+from megatron.core.dist_checkpointing.tensor_aware_state_dict import MCoreTensorAwareStateDict
+
 from miles.backends.megatron_utils.in_memory_checkpoint import InMemoryCheckpointManager, save_to_memory
 from miles.utils.process_group_utils import GroupInfo
 
@@ -46,7 +48,8 @@ def send_ckpt(
         opt_param_scheduler=opt_param_scheduler,
     )
 
-    payload = {"iteration": iteration, "state_dict": state_dict}
+    payload = _serialize_for_transport(state_dict=state_dict, iteration=iteration)
+
     transport = _create_transport(indep_dp, timeout)
     transport.send_checkpoint(
         dst_ranks=[dst_rank],
@@ -85,13 +88,46 @@ def recv_ckpt(
         step=0,
         timeout=timeout,
     )
-    iteration = payload["iteration"]
-    state_dict = payload["state_dict"]
+
+    iteration, state_dict = _deserialize_from_transport(payload)
     logger.info(f"Received checkpoint (iteration={iteration}) from alive_rank={src_rank}")
 
     manager = InMemoryCheckpointManager()
     manager.save(state_dict, iteration=iteration)
     return manager
+
+
+def _serialize_for_transport(
+    *,
+    state_dict: MCoreTensorAwareStateDict,
+    iteration: int,
+) -> dict[str, object]:
+    """Split MCoreTensorAwareStateDict into tensor list + hollow shell.
+
+    PGTransport's tree_flatten_with_path treats MCoreTensorAwareStateDict as a
+    single non-tensor leaf (it is not pytree-registered), pickling the whole
+    dataclass — which drags every ShardedTensor.data through torch.save's slow
+    CPU-only path. pop_tensors() leaves a hollow shell (data=None per
+    ShardedTensor) that pickles cheaply; tensors travel as a list, which pytree
+    flattens to leaves so each one goes via NCCL P2P.
+    """
+    tensors: list[torch.Tensor] = state_dict.pop_tensors()
+    return {
+        "tensors": tensors,
+        "hollow_state_dict": state_dict,
+        "iteration": iteration,
+    }
+
+
+def _deserialize_from_transport(
+    payload: dict[str, object],
+) -> tuple[int, MCoreTensorAwareStateDict]:
+    iteration: int = payload["iteration"]
+    hollow_state_dict: MCoreTensorAwareStateDict = payload["hollow_state_dict"]
+    tensors: list[torch.Tensor] = payload["tensors"]
+
+    hollow_state_dict.insert_tensors(tensors)
+    return iteration, hollow_state_dict
 
 
 def _create_transport(indep_dp: GroupInfo, timeout: timedelta) -> PGTransport:
