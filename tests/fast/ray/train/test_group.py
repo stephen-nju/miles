@@ -604,7 +604,7 @@ class TestRefreshCellsErrorHandling:
         group.start_cell(2)
 
         # Step 2: Replace actor factory so new actors fail on init
-        group._cells[2]._actor_factory = _make_failing_actor_factory()
+        group._cells[2].actor_factory = _make_failing_actor_factory()
 
         # Step 3: Refresh — healing init fails, cell auto-marks errored
         await group._refresh_cells()
