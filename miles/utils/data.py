@@ -275,22 +275,23 @@ def get_minimum_num_micro_batch_size(total_lengths, max_tokens_per_gpu):
 def _compute_dynamic_global_batch_size(args, *, dp_size: int, num_samples: int) -> int:
     """Compute the dynamic global batch size for the given dp_size and sample count.
 
-    HACK: thin wrapper around RolloutManager._compute_dynamic_global_batch_size, invoked
-    via a SimpleNamespace mock-self so the trim math + logging stays in one place. The
-    wrapper exists because the same logic is needed at training time under delay_split
-    FT (where the post-healing dp_size is only known on the training side), but the
-    method is currently bound to RolloutManager. Will be cleaned up once that method
-    is refactored into a stateless free function.
+    DUPLICATION: this mirrors RolloutManager._compute_dynamic_global_batch_size. The
+    rollout-side method cannot be reused directly because @ray.remote replaces it with
+    an ActorMethod wrapper. Will be deduplicated when that method is refactored into a
+    stateless free function.
     """
-    from types import SimpleNamespace
-
-    from miles.ray.rollout import RolloutManager
-
-    mock_self = SimpleNamespace(
-        train_parallel_config={"dp_size": dp_size},
-        args=args,
-    )
-    return RolloutManager._compute_dynamic_global_batch_size(mock_self, num_samples)
+    original_gbs = args.global_batch_size
+    dynamic_gbs = (num_samples // dp_size) * dp_size
+    if dynamic_gbs == 0:
+        dynamic_gbs = dp_size
+        logger.warning(f"num_samples={num_samples} < dp_size={dp_size}, using dp_size as global_batch_size")
+    wasted = num_samples - dynamic_gbs
+    if dynamic_gbs != original_gbs or wasted > 0:
+        logger.info(
+            f"Dynamic global_batch_size: {original_gbs} -> {dynamic_gbs} "
+            f"(num_samples={num_samples}, dp_size={dp_size}, num_steps=1, wasted={wasted})"
+        )
+    return dynamic_gbs
 
 
 def _apply_dynamic_global_batch_size(args, data: dict, *, dp_size: int) -> None:
