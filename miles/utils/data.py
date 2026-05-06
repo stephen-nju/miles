@@ -8,7 +8,7 @@ import re
 import numpy as np
 import ray
 
-from .data_utils import compute_dynamic_global_batch_size, split_train_data_by_dp
+from .data_utils import split_train_data_by_dp
 from .witness.allocator import WitnessInfo
 
 try:
@@ -272,6 +272,40 @@ def get_minimum_num_micro_batch_size(total_lengths, max_tokens_per_gpu):
     return len(batches)
 
 
+def _compute_dynamic_global_batch_size(args, *, dp_size: int, num_samples: int) -> int:
+    """Compute the dynamic global batch size for the given dp_size and sample count.
+
+    HACK: thin wrapper around RolloutManager._compute_dynamic_global_batch_size, invoked
+    via a SimpleNamespace mock-self so the trim math + logging stays in one place. The
+    wrapper exists because the same logic is needed at training time under delay_split
+    FT (where the post-healing dp_size is only known on the training side), but the
+    method is currently bound to RolloutManager. Will be cleaned up once that method
+    is refactored into a stateless free function.
+    """
+    from types import SimpleNamespace
+
+    from miles.ray.rollout import RolloutManager
+
+    mock_self = SimpleNamespace(
+        train_parallel_config={"dp_size": dp_size},
+        args=args,
+    )
+    return RolloutManager._compute_dynamic_global_batch_size(mock_self, num_samples)
+
+
+def _apply_dynamic_global_batch_size(args, data: dict, *, dp_size: int) -> None:
+    """Compute dynamic_global_batch_size for `dp_size` and trim per-sample lists in
+    `data` in-place so the resulting count is exactly divisible by dp_size."""
+    n_total = len(data["tokens"])
+    n_kept = _compute_dynamic_global_batch_size(args, dp_size=dp_size, num_samples=n_total)
+    data["dynamic_global_batch_size"] = n_kept
+    assert n_kept <= n_total, f"dynamic_global_batch_size={n_kept} exceeds num_samples={n_total}"
+    if n_kept < n_total:
+        for key in list(data.keys()):
+            if isinstance(data[key], list) and len(data[key]) == n_total:
+                data[key] = data[key][:n_kept]
+
+
 def process_rollout_data(
     args,
     rollout_data_ref,
@@ -289,16 +323,7 @@ def process_rollout_data(
         # per-sample lists to that count so split_train_data_by_dp partitions
         # evenly across ranks.
         if args.use_dynamic_global_batch_size:
-            n_total = len(raw["tokens"])
-            n_kept = compute_dynamic_global_batch_size(
-                args, dp_size=dp_size, num_samples=n_total
-            )
-            raw["dynamic_global_batch_size"] = n_kept
-            assert n_kept <= n_total, f"dynamic_global_batch_size={n_kept} exceeds num_samples={n_total}"
-            if n_kept < n_total:
-                for key in list(raw.keys()):
-                    if isinstance(raw[key], list) and len(raw[key]) == n_total:
-                        raw[key] = raw[key][:n_kept]
+            _apply_dynamic_global_batch_size(args, raw, dp_size=dp_size)
         raw = split_train_data_by_dp(args, raw, dp_size=dp_size)
         rollout_data = raw[dp_rank]
     else:
