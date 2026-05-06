@@ -230,9 +230,10 @@ def _recv_checkpoint_with_logging(
         cur_i = i
         i += 1
         if inplace is None:
+            # Print EVERY tensor index so we know exactly where we stop if recv hangs.
+            print(f"[OOM_DEBUG_TICK] recv_loop tensor i={cur_i} nbytes={v.nbytes}", flush=True)
             work.wait(timeout)
             t = t.cpu()
-            # Aggressive: empty cache + gc EVERY tensor so pinned-host cache cannot accumulate.
             torch._C._host_emptyCache()
             if cur_i % log_interval == 0 or cur_i == n_tensors - 1:
                 _log_mem(f"recv_loop.tensor_{cur_i}_done_nbytes_{v.nbytes}")
