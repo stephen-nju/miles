@@ -1897,12 +1897,6 @@ def miles_validate_args(args):
         # atomic: each rank saves independently, no collective communication.
         # fully_parallel needs all_gather_object which hangs after ncclCommAbort in healing.
         args.non_persistent_local_ckpt_algo = "atomic"
-        # When healing reduces dp_size mid-rollout (e.g. 4 alive cells -> 3), the
-        # fixed --global-batch-size no longer divides dp_size. miles' answer is to
-        # trim trailing samples to a multiple of dp_size (see _compute_dynamic_global_batch_size).
-        # That trim only runs when --use-dynamic-global-batch-size is on, and we
-        # require the user to opt in explicitly because turning it on changes
-        # algorithm semantics (effective batch becomes dynamic across rollouts).
         assert args.use_dynamic_global_batch_size, (
             "FT mode requires --use-dynamic-global-batch-size: healing changes "
             "dp_size mid-rollout, so the effective global batch must be trimmed "
