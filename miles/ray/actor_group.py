@@ -26,6 +26,7 @@ class RayTrainGroup:
         num_gpus_per_node,
         pg: tuple[PlacementGroup, list[int], list[int]],
         *,
+        rollout_manager: object | None,
         num_gpus_per_actor: float = 1,
         role: str,
         with_ref: bool,
@@ -35,6 +36,7 @@ class RayTrainGroup:
         self._num_gpus_per_node = num_gpus_per_node
         self.role = role
         self.with_ref = with_ref
+        self._rollout_manager = rollout_manager
 
         # Allocate the GPUs for actors w/o instantiating them
         self._actor_handles = self._allocate_gpus_for_actor(pg, num_gpus_per_actor)
@@ -56,9 +58,9 @@ class RayTrainGroup:
         """
         return await self._broadcast("init", self.args, self.role, with_ref=self.with_ref)
 
-    async def train(self, rollout_id, rollout_data_ref):
+    async def train(self, rollout_id, rollout_data_pack):
         """Do one rollout training"""
-        await self._broadcast("train", rollout_id, rollout_data_ref)
+        await self._broadcast("train", rollout_id, rollout_data_pack["data_ref"])
 
     async def save_model(self, rollout_id, force_sync=False):
         """Save actor model"""
@@ -84,8 +86,8 @@ class RayTrainGroup:
         ]
         await asyncio.gather(*refs)
 
-    async def set_rollout_manager(self, rollout_manager):
-        await self._broadcast("set_rollout_manager", rollout_manager)
+    async def set_rollout_manager(self):
+        await self._broadcast("set_rollout_manager", self._rollout_manager)
 
     async def _broadcast(self, method_name: str, *args, **kwargs) -> list:
         refs = [getattr(actor, method_name).remote(*args, **kwargs) for actor in self._actor_handles]
