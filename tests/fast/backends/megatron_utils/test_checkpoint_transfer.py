@@ -233,7 +233,7 @@ class TestTensorViewCodec:
         assert [vm["storage_id"] for vm in view_metas] == [0, 1, 0, 2, 1]
 
     def test_dtype_preserved_across_round_trip(self):
-        dtypes = [torch.float32, torch.float64, torch.int8, torch.int16,
+        dtypes = [torch.float32, torch.float64, torch.float16, torch.int8, torch.int16,
                   torch.int32, torch.int64, torch.uint8, torch.bool, torch.bfloat16]
         tensors = [torch.zeros(5, dtype=dt) for dt in dtypes]
 
@@ -364,3 +364,102 @@ class TestTensorViewCodec:
         assert decoded[0].sum().item() == 0
         assert decoded[1].sum().item() == 0
         assert original.sum().item() != 0  # original untouched
+
+    def test_same_tensor_twice_dedups_into_one_storage(self):
+        """encode([t, t]) — two references to the same tensor share one storage."""
+        t = torch.arange(8, dtype=torch.float32)
+
+        unique_storages, view_metas = _TensorViewCodec.encode([t, t])
+
+        assert len(unique_storages) == 1
+        assert [vm["storage_id"] for vm in view_metas] == [0, 0]
+        assert view_metas[0] == view_metas[1]
+
+        decoded = _TensorViewCodec.decode(unique_storages, view_metas)
+        assert torch.equal(decoded[0], t)
+        assert torch.equal(decoded[1], t)
+
+    def test_zero_dim_scalar_round_trip(self):
+        """0-d (scalar) tensor: shape=(), stride=(), storage_offset=0."""
+        scalar = torch.tensor(7.5, dtype=torch.float32)
+        assert scalar.shape == ()
+        assert scalar.stride() == ()
+
+        unique_storages, view_metas = _TensorViewCodec.encode([scalar])
+
+        assert view_metas[0]["shape"] == ()
+        assert view_metas[0]["stride"] == ()
+
+        decoded = _TensorViewCodec.decode(unique_storages, view_metas)
+        assert decoded[0].shape == ()
+        assert torch.equal(decoded[0], scalar)
+        assert decoded[0].item() == 7.5
+
+    def test_nn_parameter_input(self):
+        """Production input via state_dict.pop_tensors() may include nn.Parameter.
+        Codec uses .untyped_storage() which works on Parameter same as Tensor."""
+        param = torch.nn.Parameter(torch.arange(6, dtype=torch.float32).reshape(2, 3))
+
+        unique_storages, view_metas = _TensorViewCodec.encode([param])
+
+        assert len(unique_storages) == 1
+        assert view_metas[0]["dtype"] == torch.float32
+        assert view_metas[0]["shape"] == (2, 3)
+
+        decoded = _TensorViewCodec.decode(unique_storages, view_metas)
+        assert torch.equal(decoded[0], param.data)
+
+    def test_empty_slice_of_nonempty_storage(self):
+        """Zero-length view (shape=(0,)) over a non-empty storage."""
+        base = torch.arange(20, dtype=torch.float32)
+        empty_view = base[5:5]
+        assert empty_view.shape == (0,)
+        # Empty view shares its base's storage (data_ptr is non-null).
+        assert empty_view.untyped_storage().data_ptr() == base.untyped_storage().data_ptr()
+
+        unique_storages, view_metas = _TensorViewCodec.encode([base, empty_view])
+
+        assert len(unique_storages) == 1
+        assert [vm["storage_id"] for vm in view_metas] == [0, 0]
+        assert view_metas[1]["shape"] == (0,)
+        assert view_metas[1]["storage_offset"] == 5
+
+        decoded = _TensorViewCodec.decode(unique_storages, view_metas)
+        assert decoded[0].shape == base.shape
+        assert decoded[1].shape == (0,)
+        assert torch.equal(decoded[0], base)
+        assert torch.equal(decoded[1], empty_view)
+
+    def test_cuda_round_trip(self):
+        """Production runs on CUDA — verify the codec round-trips on GPU tensors,
+        including shared-storage dedup and dtype preservation."""
+        base = torch.arange(64, dtype=torch.float32, device="cuda")
+        view_a = base[10:30]                    # shares storage with base
+        view_b = base[30:50].view(4, 5)         # shares storage with base
+        independent = torch.zeros(8, dtype=torch.bfloat16, device="cuda")
+
+        unique_storages, view_metas = _TensorViewCodec.encode([base, view_a, view_b, independent])
+
+        assert len(unique_storages) == 2
+        assert all(s.device.type == "cuda" for s in unique_storages)
+        assert [vm["storage_id"] for vm in view_metas] == [0, 0, 0, 1]
+
+        decoded = _TensorViewCodec.decode(unique_storages, view_metas)
+        assert all(d.device.type == "cuda" for d in decoded)
+        assert torch.equal(decoded[0], base)
+        assert torch.equal(decoded[1], view_a)
+        assert torch.equal(decoded[2], view_b)
+        assert torch.equal(decoded[3], independent)
+
+    def test_cuda_storage_aliasing_no_copy(self):
+        """On CUDA, the encoded uint8 storage must alias the input tensor's
+        device memory (no host-device or device-device copy)."""
+        original = torch.arange(8, dtype=torch.float32, device="cuda")
+
+        unique_storages, view_metas = _TensorViewCodec.encode([original])
+        decoded = _TensorViewCodec.decode(unique_storages, view_metas)
+
+        assert unique_storages[0].device.type == "cuda"
+        # Mutate input — should propagate through the encoded storage to decoded view.
+        original.zero_()
+        assert decoded[0].sum().item() == 0
