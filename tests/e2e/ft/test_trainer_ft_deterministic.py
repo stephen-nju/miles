@@ -60,11 +60,17 @@ def _build_target_args(mode: FTTestMode, dump_dir: str, enable_dumper: bool = Tr
 
 
 def _compare(dump_dir: str, mode: FTTestMode) -> None:
+    # Real-rollout modes restart the SGLang server during stop+start_cell, which
+    # is not bitwise reproducible across process death (CUDA graph re-record,
+    # allocator state, kernel JIT cache). Allow the same tolerance band measured
+    # empirically across modes (~1.5-2.6% rel, ~1.3e-8 abs noise floor).
+    rtol: float = 3e-2 if mode.has_real_rollout else 1e-2
+    atol: float = 2e-8 if mode.has_real_rollout else 1e-8
     compare_metrics(
         baseline_dir=f"{dump_dir}/baseline/phase_b",
         target_dir=f"{dump_dir}/target/phase_b",
-        rtol=1e-2,
-        atol=1e-8,
+        rtol=rtol,
+        atol=atol,
         key_prefixes=["train/"],
     )
     compare_dumps(
