@@ -32,29 +32,31 @@ class TestInMemoryCheckpointManager:
         assert result is sentinel
         assert "5" in name
 
-    def test_load_clears_state_so_second_load_raises(self, manager: InMemoryCheckpointManager):
-        manager.save(state_dict=object(), iteration=1)
-        manager.load()
+    def test_load_is_idempotent_returns_same_state(self, manager: InMemoryCheckpointManager):
+        sentinel = object()
+        manager.save(state_dict=sentinel, iteration=1)
 
-        with pytest.raises(AssertionError):
-            manager.load()
+        first, _ = manager.load()
+        second, _ = manager.load()
+        assert first is sentinel
+        assert second is sentinel
 
-    def test_save_twice_without_load_raises(self, manager: InMemoryCheckpointManager):
+    def test_save_twice_without_reset_raises(self, manager: InMemoryCheckpointManager):
         manager.save(state_dict=object(), iteration=1)
 
         with pytest.raises(AssertionError):
             manager.save(state_dict=object(), iteration=2)
 
-    def test_save_load_save_load_cycle(self, manager: InMemoryCheckpointManager):
-        obj1 = object()
-        manager.save(state_dict=obj1, iteration=1)
-        result1, _ = manager.load()
-        assert result1 is obj1
+    def test_save_after_load_still_raises_load_does_not_reset(
+        self, manager: InMemoryCheckpointManager
+    ):
+        """`load()` is idempotent and does NOT clear state, so a second `save()`
+        on the same manager — even after `load()` — must still raise."""
+        manager.save(state_dict=object(), iteration=1)
+        manager.load()
 
-        obj2 = object()
-        manager.save(state_dict=obj2, iteration=2)
-        result2, _ = manager.load()
-        assert result2 is obj2
+        with pytest.raises(AssertionError):
+            manager.save(state_dict=object(), iteration=2)
 
     def test_async_save_raises(self, manager: InMemoryCheckpointManager):
         with pytest.raises(AssertionError):
