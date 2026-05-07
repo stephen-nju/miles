@@ -41,6 +41,21 @@ def create_megatron_parallel_state(
             size=mpu.get_tensor_model_parallel_world_size(),
             group=mpu.get_tensor_model_parallel_group(),
         ),
+        pp=GroupInfo(
+            rank=mpu.get_pipeline_model_parallel_rank(),
+            size=mpu.get_pipeline_model_parallel_world_size(),
+            group=mpu.get_pipeline_model_parallel_group(),
+        ),
+        ep=GroupInfo(
+            rank=mpu.get_expert_model_parallel_rank(),
+            size=mpu.get_expert_model_parallel_world_size(),
+            group=mpu.get_expert_model_parallel_group(),
+        ),
+        etp=GroupInfo(
+            rank=mpu.get_expert_tensor_parallel_rank(),
+            size=mpu.get_expert_tensor_parallel_world_size(),
+            group=mpu.get_expert_tensor_parallel_group(),
+        ),
         indep_dp=indep_dp,
         is_pp_last_stage=mpu.is_pipeline_last_stage(),
         vpp_size=vpp_size,

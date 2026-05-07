@@ -163,6 +163,25 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Add margin for train memory allocation. By default we will reserve 1GB as margin.",
             )
             parser.add_argument(
+                "--debug-skip-weight-update",
+                action="store_true",
+                default=False,
+                help=(
+                    "Debug-only: preserve the train/rollout offload-onload schedule, "
+                    "but skip the actual actor-to-rollout weight update."
+                ),
+            )
+            parser.add_argument(
+                "--debug-disable-optimizer",
+                action="store_true",
+                default=False,
+                help=(
+                    "Debug-only: do not initialize the Megatron optimizer or LR scheduler. "
+                    "Training still runs rollout, log-prob forward, and actor forward/backward, "
+                    "but skips optimizer state allocation and optimizer updates."
+                ),
+            )
+            parser.add_argument(
                 "--disable-weights-backuper",
                 action="store_false",
                 dest="enable_weights_backuper",
@@ -178,6 +197,23 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 choices=["raw", "bridge"],
                 default="raw",
                 help="The method to convert megatron weights to hugging face weights for SGLang.",
+            )
+            parser.add_argument(
+                "--extra-high-precision-layers-hf",
+                type=str,
+                nargs="*",
+                default=(),
+                help=("Extra substrings for HF weight names to skip quantization " "(e.g. .kv_b_proj.)."),
+            )
+            parser.add_argument(
+                "--extra-high-precision-layers-megatron",
+                type=str,
+                nargs="*",
+                default=(),
+                help=(
+                    "Extra substrings for Megatron weight names to skip quantization in Megatron-to-HF paths "
+                    "(e.g. .linear_kv_up_proj.)."
+                ),
             )
             parser.add_argument(
                 "--custom-model-provider-path",
@@ -260,12 +296,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     else "miles.rollout.sglang_rollout.generate_rollout"
                 ),
                 help=(
-                    "Path to the rollout generation function."
-                    "You should use this model to create your own custom rollout function, "
-                    "and then set this to the path of your custom rollout function. "
-                    "The signature of the function should be "
-                    "`def generate_rollout(args, rollout_id, *, evaluation=False) -> list[list[Sample]]`"
-                    "and within the output sample, you should at least set `tokens`, `response_length`, `reward` "
+                    "Path to the rollout generation function. "
+                    "Use this to create your own custom rollout function and set this to its path. "
+                    "The function is called as `fn(args, rollout_id, data_source, evaluation=evaluation)`, "
+                    "so its signature should be "
+                    "`def generate_rollout(args, rollout_id, data_source, evaluation=False) "
+                    "-> RolloutFnTrainOutput | RolloutFnEvalOutput` "
+                    "(see `miles.rollout.sglang_rollout.generate_rollout` for the default impl). "
+                    "Within each output sample, set at least `tokens`, `response_length`, `reward`, "
                     "and `truncated`."
                 ),
             )
@@ -402,6 +440,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--max-weight-staleness",
+                type=int,
+                default=None,
+                help=(
+                    "Maximum allowed gap between a group's oldest weight version and the current "
+                    "engine weight version. Groups exceeding this threshold are recycled back to "
+                    "the data buffer instead of being sent to training. Only effective in fully "
+                    "async mode. None (default) disables staleness filtering."
+                ),
+            )
+            parser.add_argument(
                 "--custom-generate-function-path",
                 type=str,
                 default=None,
@@ -456,6 +505,19 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=int,
                 default=1,
                 help="Interval for updating the weights",
+            )
+            parser.add_argument(
+                "--pause-generation-mode",
+                type=str,
+                choices=["abort", "retract", "in_place"],
+                default="retract",
+                help=(
+                    "How SGLang pauses in-flight requests during weight updates. "
+                    "'abort' immediately terminates all requests (previous default). "
+                    "'retract' moves running requests back to the waiting queue and "
+                    "recomputes KV cache after update. "
+                    "'in_place' freezes requests and resumes with existing KV cache."
+                ),
             )
             parser.add_argument(
                 "--keep-old-actor",
@@ -644,12 +706,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--chat-template-path",
                 type=str,
                 default=None,
-                help="Path to a custom Jinja chat template file (.jinja), or 'autofix'. "
+                help="Path to an explicit custom Jinja chat template file (.jinja). "
                 "Sets tokenizer.chat_template when loading via load_tokenizer, "
                 "and also sets --sglang-chat-template so the sglang server uses the same template. "
-                "If set to 'autofix', Miles will automatically select a fixed chat template "
-                "maintained internally that resolves train-inference token mismatch issues "
-                "in agentic workflows (e.g. tool-call trajectories). "
+                "For Miles-maintained fixed templates, leave this unset and pass "
+                "--tito-model plus --tito-allowed-append-roles so Miles can auto-resolve "
+                "the registered template. The literal value 'autofix' is kept only as a "
+                "deprecated compatibility alias for that auto-resolve path. "
                 "The path must be accessible on all Ray worker nodes "
                 "(e.g. a path inside the miles repo, or a shared filesystem like NFS).",
             )
@@ -1220,6 +1283,30 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument("--wandb-run-id", type=str, default=None)
             return parser
 
+        # mlflow
+        def add_mlflow_arguments(parser):
+            parser.add_argument("--use-mlflow", action="store_true", default=False)
+            parser.add_argument(
+                "--mlflow-tracking-uri",
+                type=str,
+                default=None,
+                help="MLflow tracking server URI. Defaults to MLFLOW_TRACKING_URI env var, or local mlruns/ directory.",
+            )
+            parser.add_argument(
+                "--mlflow-experiment-name",
+                type=str,
+                default="miles",
+                help="MLflow experiment name.",
+            )
+            parser.add_argument(
+                "--mlflow-run-name",
+                type=str,
+                default=None,
+                help="MLflow run name. Defaults to --wandb-group if not set.",
+            )
+            parser.add_argument("--mlflow-run-id", type=str, default=None)
+            return parser
+
         # tensorboard
         def add_tensorboard_arguments(parser):
             # tb_project_name, tb_experiment_name
@@ -1536,8 +1623,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Path to the rollout sample filter function. "
                     "This function determines whether a sample will participate in loss calculation. "
-                    "The function should take args and samples (list[Sample]) as input, and return None. "
-                    "Please directly modify the remove_sample attribute of Sample. "
+                    "The function is called as `fn(args, data)` where `data` is `list[list[Sample]]` "
+                    "(grouped by n_samples_per_prompt), and should return None. "
+                    "To exclude a sample from the loss, set `sample.remove_sample = True`. "
                     "Note: This attribute does not determine whether the sample participates in advantage normalization."
                 ),
             )
@@ -1725,6 +1813,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_algo_arguments(parser)
         parser = add_lora_arguments(parser)
         parser = add_wandb_arguments(parser)
+        parser = add_mlflow_arguments(parser)
         parser = add_tensorboard_arguments(parser)
         parser = add_prometheus_arguments(parser)
         parser = add_router_arguments(parser)
@@ -1778,7 +1867,7 @@ def parse_args(add_custom_arguments=None):
         args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
         args = set_default_megatron_args(args)
     else:
-        from miles.backends.fsdp_utils.arguments import load_fsdp_args
+        from miles.backends.experimental.fsdp_utils.arguments import load_fsdp_args
 
         args = load_fsdp_args(extra_args_provider=add_miles_arguments)
         # TODO: unify this .rank and .world_size w/ indep_dp logics
@@ -1786,6 +1875,13 @@ def parse_args(add_custom_arguments=None):
         args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
 
         assert args.context_parallel_size == 1, "Context parallelism is not supported for FSDP backend."
+
+        if not args.ci_test:
+            raise ValueError(
+                "The FSDP backend has known issues with SGLang v0.5.10 and is not actively maintained in the current version. "
+                "It has been moved to miles.backends.experimental. "
+                "Contributions are welcome if you are interested in improving it."
+            )
 
     miles_validate_args(args)
 
@@ -1914,6 +2010,18 @@ def miles_validate_args(args):
     raw_roles = getattr(args, "tito_allowed_append_roles", ["tool"])
     args.tito_allowed_append_roles = sorted(set(r.lower() for r in raw_roles))
 
+    if not args.use_session_server:
+        misconfigured = []
+        if args.tito_model != TITOTokenizerType.DEFAULT.value:
+            misconfigured.append(f"--tito-model={args.tito_model}")
+        if args.tito_allowed_append_roles != ["tool"]:
+            misconfigured.append(f"--tito-allowed-append-roles={args.tito_allowed_append_roles}")
+        if misconfigured:
+            raise ValueError(
+                f"{', '.join(misconfigured)} require --use-session-server; "
+                "these flags only configure the session-server TITO middleware."
+            )
+
     if "user" in args.tito_allowed_append_roles:
         logger.warning(
             "--tito-allowed-append-roles includes 'user'. "
@@ -1923,15 +2031,56 @@ def miles_validate_args(args):
             "thinking-token trimming). This can cause input_ids to diverge from "
             "the canonical template output. Use at your own risk."
         )
-    if args.chat_template_path == "autofix":
-        from miles.utils.chat_template_utils import try_get_fixed_chat_template
 
-        resolved = try_get_fixed_chat_template(args.hf_checkpoint)
-        if resolved is None:
-            logger.warning(
-                "--chat-template-path=autofix but no fix rule found for %s, using HF default", args.hf_checkpoint
-            )
-        args.chat_template_path = resolved
+    if args.debug_disable_optimizer:
+        args.no_load_optim = True
+        args.no_save_optim = True
+
+    # Normalize the deprecated ``--chat-template-path=autofix`` alias to None
+    # up-front so the rest of this block treats it as "no path given".
+    if args.chat_template_path == "autofix":
+        logger.warning(
+            "--chat-template-path=autofix is deprecated; remove the flag and rely "
+            "on --tito-model + --tito-allowed-append-roles to auto-resolve. The "
+            "alias will be removed in a future release."
+        )
+        args.chat_template_path = None
+
+    # Auto-resolve a bundled fixed chat-template only when:
+    #   1. the caller did NOT pass --chat-template-path (an explicit path always
+    #      wins and is never overridden)
+    #   2. the caller chose a non-default --tito-model family (DEFAULT means
+    #      "use the model's native HF chat template", which is loaded by
+    #      AutoTokenizer.from_pretrained — no override needed here)
+    should_auto_resolve = args.chat_template_path is None and args.tito_model != TITOTokenizerType.DEFAULT.value
+
+    if should_auto_resolve:
+        tito_model = TITOTokenizerType(args.tito_model)
+        from miles.utils.chat_template_utils import resolve_fixed_chat_template
+
+        resolved_path, resolved_kwargs = resolve_fixed_chat_template(
+            tito_model,
+            allowed_append_roles=args.tito_allowed_append_roles,
+        )
+        if resolved_path is not None:
+            args.chat_template_path = resolved_path
+        # Merge inferred kwargs.  User-explicit values win on conflict; only
+        # keys the user did not set are auto-filled.
+        if resolved_kwargs:
+            user_kwargs = args.apply_chat_template_kwargs or {}
+            for key, value in resolved_kwargs.items():
+                if key in user_kwargs:
+                    continue
+                user_kwargs[key] = value
+                logger.warning(
+                    "Auto-set --apply-chat-template-kwargs %s=%r for tito_model=%s "
+                    "(allowed_append_roles=%s); pass an explicit value to override.",
+                    key,
+                    value,
+                    tito_model.value,
+                    sorted(args.tito_allowed_append_roles),
+                )
+            args.apply_chat_template_kwargs = user_kwargs
 
     if args.chat_template_path is not None:
         if not os.path.isfile(args.chat_template_path):
@@ -2084,6 +2233,14 @@ def miles_validate_args(args):
             args.offload_train = True
         if args.offload_rollout is None:
             args.offload_rollout = True
+        if args.sglang_enforce_piecewise_cuda_graph:
+            logger.warning("Warning: colocate mode with --sglang-enforce-piecewise-cuda-graph may trigger NVLS OOM.")
+        if not args.sglang_disable_piecewise_cuda_graph:
+            args.sglang_disable_piecewise_cuda_graph = True
+            logger.info(
+                "Colocate mode: defaulting --sglang-disable-piecewise-cuda-graph to avoid NVLS OOM. "
+                "Use --sglang-enforce-piecewise-cuda-graph to override."
+            )
         if args.rollout_num_gpus != args.actor_num_gpus_per_node * args.actor_num_nodes:
             logger.info(
                 f"rollout_num_gpus {args.rollout_num_gpus} != actor_num_gpus_per_node {args.actor_num_gpus_per_node} "
@@ -2237,6 +2394,9 @@ def hf_validate_args(args, hf_config):
         ),
         ("rope_theta", "rotary_base", equal),
     ]:
+        # FIXME: Qwen3.5 transfomers has bug.
+        if getattr(hf_config, "model_type", "") == "qwen3_5_moe_text" and hf_config_name == "intermediate_size":
+            continue
         if hasattr(hf_config, hf_config_name):
             if not compare_fn(getattr(hf_config, hf_config_name), getattr(args, megatron_config_name)):
                 errors.append(

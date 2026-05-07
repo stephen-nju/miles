@@ -54,7 +54,7 @@ def allocate_gpus_for_actor(
         actor_impl = MegatronTrainRayActor
 
     else:
-        from miles.backends.fsdp_utils import FSDPTrainRayActor
+        from miles.backends.experimental.fsdp_utils import FSDPTrainRayActor
 
         actor_impl = FSDPTrainRayActor
 

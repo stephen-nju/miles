@@ -38,6 +38,7 @@ def split_train_data_by_dp(args, data: dict[str, Any], *, dp_size: int) -> list[
             "prompt",
             "teacher_log_probs",
             "seq_witness_ids",
+            "weight_versions",
         ]:
             if key not in data:
                 continue
@@ -47,6 +48,7 @@ def split_train_data_by_dp(args, data: dict[str, Any], *, dp_size: int) -> list[
         for key in [
             "raw_reward",
             "total_lengths",
+            "dynamic_global_batch_size",
         ]:
             if key not in data:
                 continue

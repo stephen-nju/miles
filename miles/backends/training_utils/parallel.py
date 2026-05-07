@@ -33,6 +33,9 @@ class ParallelState:
     intra_dp_cp: GroupInfo
     cp: GroupInfo
     tp: GroupInfo
+    pp: GroupInfo
+    ep: GroupInfo
+    etp: GroupInfo
     indep_dp: GroupInfo
     is_pp_last_stage: bool = True
     vpp_size: int | None = 1

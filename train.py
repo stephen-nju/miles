@@ -11,7 +11,7 @@ from miles.utils.logging_utils import configure_logger
 from miles.utils.mini_ft_controller import maybe_start_mini_ft_controller
 from miles.utils.misc import should_run_periodic_action
 from miles.utils.process_identity import MainProcessIdentity
-from miles.utils.tracking_utils import init_tracking
+from miles.utils.tracking_utils import finish_tracking, init_tracking
 
 logger = logging.getLogger(__name__)
 
@@ -126,4 +126,7 @@ async def train(args):
 
 if __name__ == "__main__":
     args = parse_args()
-    asyncio.run(train(args))
+    try:
+        asyncio.run(train(args))
+    finally:
+        finish_tracking()
