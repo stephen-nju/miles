@@ -152,21 +152,11 @@ def setup_session_routes(app, backend, args):
                 request_body["no_stop_trim"] = False
 
                 request_messages = request_body.get("messages", [])
-                pretokenized = session.prepare_pretokenized(
+                prompt_token_ids = session.prepare_pretokenized(
                     request_messages,
                     tools=request_body.get("tools"),
                     tito_tokenizer=registry.tito_tokenizer,
                 )
-                prompt_token_ids = None
-                if pretokenized is not None:
-                    prompt_token_ids = pretokenized["input_ids"]
-                else:
-                    prompt_token_ids = registry.tito_tokenizer.render_messages(
-                        request_messages,
-                        tools=request_body.get("tools"),
-                        add_generation_prompt=True,
-                        tokenize=True,
-                    )
                 request_body["input_ids"] = prompt_token_ids
                 logger.debug(
                     "Using TITO input_ids: %d tokens",
