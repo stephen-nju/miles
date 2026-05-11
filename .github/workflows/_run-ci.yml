@@ -9,22 +9,6 @@ on:
       execute_command:
         type: string
         required: true
-      infinite_run:
-        type: boolean
-        required: false
-        default: false
-      ci_megatron_pr:
-        type: string
-        required: false
-        default: ''
-      ci_sglang_pr:
-        type: string
-        required: false
-        default: ''
-      pr_body:
-        type: string
-        required: false
-        default: ''
       runs_on:
         type: string
         required: false
@@ -71,7 +55,7 @@ jobs:
       PYTHONPATH: ${{ github.workspace }}
       GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
-      MILES_TEST_ENABLE_INFINITE_RUN: ${{ inputs.infinite_run }}
+      MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
       MILES_TEST_FEW_GPU: '0'
     steps:
       - name: Checkout repository
@@ -94,9 +78,9 @@ jobs:
         id: resolve-refs
         shell: bash
         env:
-          PR_BODY: ${{ inputs.pr_body }}
-          INPUT_MEGATRON_PR: ${{ inputs.ci_megatron_pr }}
-          INPUT_SGLANG_PR: ${{ inputs.ci_sglang_pr }}
+          PR_BODY: ${{ github.event.pull_request.body || '' }}
+          INPUT_MEGATRON_PR: ${{ github.event.inputs.ci_megatron_pr || '' }}
+          INPUT_SGLANG_PR: ${{ github.event.inputs.ci_sglang_pr || '' }}
         run: |
           MEGATRON_PR="${INPUT_MEGATRON_PR}"
           SGLANG_PR="${INPUT_SGLANG_PR}"
@@ -180,9 +164,9 @@ jobs:
         id: resolve-refs
         shell: bash
         env:
-          PR_BODY: ${{ inputs.pr_body }}
-          INPUT_MEGATRON_PR: ${{ inputs.ci_megatron_pr }}
-          INPUT_SGLANG_PR: ${{ inputs.ci_sglang_pr }}
+          PR_BODY: ${{ github.event.pull_request.body || '' }}
+          INPUT_MEGATRON_PR: ${{ github.event.inputs.ci_megatron_pr || '' }}
+          INPUT_SGLANG_PR: ${{ github.event.inputs.ci_sglang_pr || '' }}
         run: |
           MEGATRON_PR="${INPUT_MEGATRON_PR}"
           SGLANG_PR="${INPUT_SGLANG_PR}"
