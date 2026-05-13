@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 def _install_bridge_pp_group_unwrap() -> None:
     """Let ``MegatronParamMapping.broadcast_obj_from_pp_rank`` work with
-    miles' :class:`~miles.utils.reloadable_process_group.ReloadableProcessGroup`.
+    miles' :class:`~miles.utils.distributed_utils.reloadable.ReloadableProcessGroup`.
 
     ``broadcast_obj_from_pp_rank`` calls ``broadcast_object_list`` on
     ``self.pp_group``, which goes through ``_world.pg_group_ranks``. Miles wraps
@@ -33,7 +33,7 @@ def _install_bridge_pp_group_unwrap() -> None:
     """
     from megatron.bridge.models.conversion.param_mapping import MegatronParamMapping
 
-    from miles.utils.reloadable_process_group import ReloadableProcessGroup
+    from miles.utils.distributed_utils.reloadable import ReloadableProcessGroup
 
     if getattr(MegatronParamMapping, "_miles_pp_group_unwrap_installed", False):
         return
