@@ -2,7 +2,7 @@ import time
 import pytest
 import torch
 
-from miles.utils.ppo_utils import chunked_gae, vanilla_gae
+from miles.utils.training_utils.ppo import chunked_gae, vanilla_gae
 
 
 @pytest.mark.parametrize(

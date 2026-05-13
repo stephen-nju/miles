@@ -9,6 +9,22 @@ from miles.utils.training_utils.flops import (
     calculate_qkv_projection_flops,
 )
 from miles.utils.training_utils.metrics import log_perf_data_raw
+from miles.utils.training_utils.ppo import (
+    calculate_log_probs_and_entropy,
+    chunked_gae,
+    compute_approx_kl,
+    compute_entropy_from_logits,
+    compute_gspo_kl,
+    compute_log_probs,
+    compute_opsm_mask,
+    compute_policy_loss,
+    get_advantages_and_returns,
+    get_advantages_and_returns_batch,
+    get_grpo_returns,
+    get_reinforce_plus_plus_baseline_advantages,
+    get_reinforce_plus_plus_returns,
+    vanilla_gae,
+)
 
 __all__ = [
     "calculate_attention_flops",
@@ -16,8 +32,22 @@ __all__ = [
     "calculate_fwd_flops",
     "calculate_layer_flops",
     "calculate_lm_head_flops",
+    "calculate_log_probs_and_entropy",
     "calculate_mlp_flops",
     "calculate_output_flops",
     "calculate_qkv_projection_flops",
+    "chunked_gae",
+    "compute_approx_kl",
+    "compute_entropy_from_logits",
+    "compute_gspo_kl",
+    "compute_log_probs",
+    "compute_opsm_mask",
+    "compute_policy_loss",
+    "get_advantages_and_returns",
+    "get_advantages_and_returns_batch",
+    "get_grpo_returns",
+    "get_reinforce_plus_plus_baseline_advantages",
+    "get_reinforce_plus_plus_returns",
     "log_perf_data_raw",
+    "vanilla_gae",
 ]
