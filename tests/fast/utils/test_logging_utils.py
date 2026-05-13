@@ -12,7 +12,7 @@ from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=60, suite="stage-a-fast")
 
-from miles.utils.logging_utils import configure_strict_async_warnings
+from miles.utils.observability_utils import configure_strict_async_warnings
 
 
 async def _dummy_coroutine():
@@ -43,7 +43,7 @@ class TestUnawaitedCoroutineCrashesProcess:
         result = _run_snippet(
             """
             import gc
-            from miles.utils.logging_utils import configure_strict_async_warnings
+            from miles.utils.observability_utils import configure_strict_async_warnings
             configure_strict_async_warnings()
 
             async def foo(): pass
@@ -60,7 +60,7 @@ class TestUnawaitedCoroutineCrashesProcess:
         result = _run_snippet(
             """
             import gc
-            from miles.utils.logging_utils import configure_strict_async_warnings
+            from miles.utils.observability_utils import configure_strict_async_warnings
             configure_strict_async_warnings()
 
             async def foo(): pass
@@ -78,7 +78,7 @@ class TestUnawaitedCoroutineCrashesProcess:
         result = _run_snippet(
             """
             import asyncio
-            from miles.utils.logging_utils import configure_strict_async_warnings
+            from miles.utils.observability_utils import configure_strict_async_warnings
             configure_strict_async_warnings()
 
             async def foo(): return 42

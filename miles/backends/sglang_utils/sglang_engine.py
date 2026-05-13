@@ -15,7 +15,7 @@ from urllib3.exceptions import NewConnectionError
 
 from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME, convert_target_modules_to_hf, is_lora_enabled
 from miles.ray.ray_actor import RayActor
-from miles.utils.env_report import collect_and_print_node_env_report
+from miles.utils.observability_utils import collect_and_print_node_env_report
 from miles.utils.net_utils import get_host_info
 
 logger = logging.getLogger(__name__)

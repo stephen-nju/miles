@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
-from miles.utils.env_report import (
+from miles.utils.observability_utils import (
     ENV_REPORT_PREFIX,
     EditablePackageInfo,
     NodeEnvReport,
@@ -87,7 +87,7 @@ class TestCollectPipInfo:
             stdout=json.dumps(_SAMPLE_PIP_INSPECT),
             stderr="",
         )
-        with patch("miles.utils.env_report.subprocess.run", return_value=mock_result):
+        with patch("miles.utils.observability_utils.env_report.subprocess.run", return_value=mock_result):
             editable, full_list = _collect_pip_info()
 
         assert len(full_list) == 4
@@ -113,13 +113,13 @@ class TestCollectPipInfo:
             stdout="",
             stderr="error",
         )
-        with patch("miles.utils.env_report.subprocess.run", return_value=mock_result):
+        with patch("miles.utils.observability_utils.env_report.subprocess.run", return_value=mock_result):
             editable, full_list = _collect_pip_info()
         assert editable == []
         assert full_list == []
 
     def test_pip_inspect_exception_returns_empty(self) -> None:
-        with patch("miles.utils.env_report.subprocess.run", side_effect=OSError("no pip")):
+        with patch("miles.utils.observability_utils.env_report.subprocess.run", side_effect=OSError("no pip")):
             editable, full_list = _collect_pip_info()
         assert editable == []
         assert full_list == []
@@ -134,7 +134,7 @@ class TestCollectPipInfo:
             stderr="",
         )
         with patch.dict(os.environ, {"PYTHONPATH": "/workspace/Megatron-LM"}):
-            with patch("miles.utils.env_report.subprocess.run", return_value=mock_result) as mock_run:
+            with patch("miles.utils.observability_utils.env_report.subprocess.run", return_value=mock_result) as mock_run:
                 _collect_pip_info()
 
         passed_env = mock_run.call_args.kwargs.get("env")
@@ -203,7 +203,7 @@ class TestCollectAndPrintNodeEnvReport:
         )
 
     def test_returns_structured_report(self) -> None:
-        with patch("miles.utils.env_report.subprocess.run", return_value=self._mock_pip_inspect()):
+        with patch("miles.utils.observability_utils.env_report.subprocess.run", return_value=self._mock_pip_inspect()):
             report = collect_and_print_node_env_report(
                 role="training",
                 rank=0,
@@ -218,7 +218,7 @@ class TestCollectAndPrintNodeEnvReport:
         assert len(report.full_pip_list) == 4
 
     def test_prints_single_line_json(self, capsys) -> None:
-        with patch("miles.utils.env_report.subprocess.run", return_value=self._mock_pip_inspect()):
+        with patch("miles.utils.observability_utils.env_report.subprocess.run", return_value=self._mock_pip_inspect()):
             collect_and_print_node_env_report(
                 role="rollout",
                 rank=3,
@@ -235,7 +235,7 @@ class TestCollectAndPrintNodeEnvReport:
 
     def test_printed_json_has_sorted_keys(self, capsys) -> None:
         """Verify JSON output uses sort_keys for deterministic cross-process comparison."""
-        with patch("miles.utils.env_report.subprocess.run", return_value=self._mock_pip_inspect()):
+        with patch("miles.utils.observability_utils.env_report.subprocess.run", return_value=self._mock_pip_inspect()):
             collect_and_print_node_env_report(
                 role="training",
                 rank=0,
@@ -249,7 +249,7 @@ class TestCollectAndPrintNodeEnvReport:
         assert keys == sorted(keys), f"Top-level keys not sorted: {keys}"
 
     def test_empty_partial_env_report(self) -> None:
-        with patch("miles.utils.env_report.subprocess.run", return_value=self._mock_pip_inspect()):
+        with patch("miles.utils.observability_utils.env_report.subprocess.run", return_value=self._mock_pip_inspect()):
             report = collect_and_print_node_env_report(
                 role="training",
                 rank=0,
@@ -258,7 +258,7 @@ class TestCollectAndPrintNodeEnvReport:
         assert report.launcher_env_report is None
 
     def test_invalid_json_partial_env_report(self) -> None:
-        with patch("miles.utils.env_report.subprocess.run", return_value=self._mock_pip_inspect()):
+        with patch("miles.utils.observability_utils.env_report.subprocess.run", return_value=self._mock_pip_inspect()):
             report = collect_and_print_node_env_report(
                 role="training",
                 rank=0,
@@ -267,7 +267,7 @@ class TestCollectAndPrintNodeEnvReport:
         assert report.launcher_env_report is None
 
     def test_report_serializable(self) -> None:
-        with patch("miles.utils.env_report.subprocess.run", return_value=self._mock_pip_inspect()):
+        with patch("miles.utils.observability_utils.env_report.subprocess.run", return_value=self._mock_pip_inspect()):
             report = collect_and_print_node_env_report(
                 role="training",
                 rank=0,

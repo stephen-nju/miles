@@ -9,7 +9,7 @@ import torch.distributed as dist
 
 from miles.utils import train_metric_utils
 from miles.utils.flops_utils import calculate_fwd_flops
-from miles.utils.metric_utils import compute_pass_rate, compute_rollout_step
+from miles.utils.observability_utils import compute_pass_rate, compute_rollout_step
 from miles.utils.types import RolloutBatch
 
 from ...utils import tracking_utils

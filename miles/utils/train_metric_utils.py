@@ -4,7 +4,7 @@ from collections.abc import Callable
 from copy import deepcopy
 
 from miles.utils import tracking_utils
-from miles.utils.metric_utils import compute_rollout_step
+from miles.utils.observability_utils import compute_rollout_step
 from miles.utils.timer import Timer
 
 logger = logging.getLogger(__name__)
