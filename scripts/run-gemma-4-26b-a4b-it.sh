@@ -33,10 +33,16 @@ source "${SCRIPT_DIR}/models/gemma-4-26b-a4b-it.sh"
 
 MODELS_DIR=${MODELS_DIR:-/storage/models}
 DATASETS_DIR=${DATASETS_DIR:-/cluster_public/miles_data/datasets}
+# LLM_CKPT is a symlinked view of $MODELS_DIR/google/gemma-4-26B-A4B-it with a
+# rewritten config.json that promotes text_config to top level and sets
+# architectures=["Gemma4ForCausalLM"], so AutoBridge picks the LLM bridge and
+# sglang dispatches to its native Gemma4ForCausalLM model implementation
+# (instead of the generic transformers adapter, which can't drive the model).
+LLM_CKPT=${LLM_CKPT:-/cluster_personal/zhichen/gemma4_test/gemma-4-26B-A4B-it-llm}
 
 CKPT_ARGS=(
-   --hf-checkpoint $MODELS_DIR/google/gemma-4-26B-A4B-it
-   --ref-load $MODELS_DIR/google/gemma-4-26B-A4B-it
+   --hf-checkpoint $LLM_CKPT
+   --ref-load $LLM_CKPT
    --save $MODELS_DIR/google/gemma-4-26B-A4B-it_miles
    --save-interval 20
    --megatron-to-hf-mode bridge
