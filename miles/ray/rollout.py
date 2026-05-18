@@ -46,7 +46,8 @@ from miles.utils.tracking_utils import init_tracking
 from miles.utils.types import Sample
 
 from ..utils.metric_utils import has_repetition
-from .utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST, Lock
+from .rollout_env import build_sglang_rollout_env_vars
+from .utils import Lock
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
@@ -127,23 +128,12 @@ class ServerGroup:
                 placement_group_bundle_index=reordered_bundle_indices[gpu_index],
             )
 
-            env_vars = {name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST} | {
-                key: os.environ.get(key, default_val)
-                for key, default_val in {
-                    "SGLANG_JIT_DEEPGEMM_PRECOMPILE": "false",
-                    "SGL_DISABLE_TP_MEMORY_INBALANCE_CHECK": "true",
-                    "SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK": "true",
-                    "SGLANG_MEMORY_SAVER_CUDA_GRAPH": "true",
-                    "SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2": (
-                        "0" if self.args.colocate and self.args.rollout_num_gpus_per_engine > 1 else "1"
-                    ),
-                    "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_DEEPGEMM": "1",
-                    "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "true",
-                    "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
-                    "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE": "false",
-                }.items()
-            }
-            env_vars.update(dumper_utils.get_sglang_env(self.args))
+            env_vars = build_sglang_rollout_env_vars(
+                dumper_utils.get_sglang_env(self.args),
+                custom_all_reduce_v2_default=(
+                    "0" if self.args.colocate and self.args.rollout_num_gpus_per_engine > 1 else "1"
+                ),
+            )
 
             rollout_engine = RolloutRayActor.options(
                 num_cpus=num_cpus,

@@ -468,14 +468,16 @@ async def generate_rollout_async(
         process_func = load_function(args.rollout_all_samples_process_path)
         process_func(args, all_samples, data_source)
 
-    await recompute_samples_rollout_logprobs_via_prefill(
+    prefill_logprob_metrics = await recompute_samples_rollout_logprobs_via_prefill(
         args,
         [sample for group in data for sample in group],
         url=get_model_url(args, "default"),
         sampling_params=state.sampling_params,
     )
 
-    return RolloutFnTrainOutput(samples=data, metrics=metric_gatherer.collect()), aborted_samples
+    metrics = metric_gatherer.collect()
+    metrics.update({f"perf/{key}": value for key, value in prefill_logprob_metrics.items()})
+    return RolloutFnTrainOutput(samples=data, metrics=metrics), aborted_samples
 
 
 EVAL_PROMPT_DATASET = {}

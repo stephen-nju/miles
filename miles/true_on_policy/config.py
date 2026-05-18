@@ -90,6 +90,7 @@ class TrueOnPolicyKernelPolicy:
     deterministic_moe_combine: bool
     ep_invariant_moe: bool
     sglang_attention_data_parallel_size: int
+    disable_sglang_cuda_graph: bool
 
     def build_sglang_args(self) -> TrueOnPolicyArgList:
         values = [
@@ -98,6 +99,8 @@ class TrueOnPolicyKernelPolicy:
             "--sglang-attention-backend",
             self.sglang_attention_backend,
         ]
+        if self.disable_sglang_cuda_graph:
+            values.insert(0, "--sglang-disable-cuda-graph")
         if self.prefill_only_deterministic_inference:
             values.insert(0, "--sglang-enable-prefill-only-deterministic-inference")
         if self.deterministic_inference:
@@ -194,6 +197,7 @@ class TrueOnPolicyConfig:
     train_world_size: int | None = None
     contract_override: str | None = None
     fast_decode: bool = False
+    recompute_logprobs_via_prefill: bool = False
 
     @property
     def parallel_layout(self) -> TrueOnPolicyParallelLayout:
@@ -299,6 +303,7 @@ class TrueOnPolicyConfig:
         )
         if self.fast_decode:
             policy_kwargs["deterministic_inference"] = False
+            policy_kwargs["disable_sglang_cuda_graph"] = False
         return TrueOnPolicyKernelPolicy(
             contract=self.contract,
             prefill_only_deterministic_inference=self.fast_decode,
@@ -314,7 +319,9 @@ class TrueOnPolicyConfig:
                 for value in (
                     "--deterministic-mode",
                     "--true-on-policy-mode",
-                    "--recompute-logprobs-via-prefill",
+                    "--recompute-logprobs-via-prefill"
+                    if self.recompute_logprobs_via_prefill
+                    else None,
                     "--true-on-policy-fast-decode" if self.fast_decode else None,
                 )
                 if value is not None
@@ -360,6 +367,13 @@ def _get_optional_int(args: Any, name: str, default: int) -> int:
     return int(value)
 
 
+def _get_optional_bool(args: Any, name: str, default: bool) -> bool:
+    value = getattr(args, name, default)
+    if value is None:
+        return default
+    return bool(value)
+
+
 def build_true_on_policy_config(args: Any) -> TrueOnPolicyConfig | None:
     if not getattr(args, "true_on_policy", False):
         return None
@@ -386,6 +400,9 @@ def build_true_on_policy_config(args: Any) -> TrueOnPolicyConfig | None:
         train_world_size=train_world_size,
         contract_override=getattr(args, "true_on_policy_contract", None),
         fast_decode=getattr(args, "true_on_policy_fast_decode", False),
+        recompute_logprobs_via_prefill=_get_optional_bool(
+            args, "true_on_policy_recompute_logprobs_via_prefill", False
+        ),
     )
 
 

@@ -85,6 +85,9 @@ class TrueOnPolicyContract:
             "deterministic_moe_combine": is_moe and uses_ep_invariant_moe,
             "ep_invariant_moe": is_moe and uses_ep_invariant_moe,
             "sglang_attention_data_parallel_size": sglang_attention_data_parallel_size,
+            # Qwen3-MoE strict CUDA graph replay returns logits in the same dtype
+            # as eager decode, so the sampler/logprob path remains exact-zero.
+            "disable_sglang_cuda_graph": False,
         }
 
 

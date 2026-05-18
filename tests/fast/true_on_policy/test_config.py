@@ -29,6 +29,7 @@ def _args(**overrides):
         "sglang_expert_parallel_size": 1,
         "true_on_policy_contract": None,
         "true_on_policy_fast_decode": False,
+        "true_on_policy_recompute_logprobs_via_prefill": False,
         "use_sequence_parallel": True,
         "num_nodes": 1,
         "num_gpus_per_node": 8,
@@ -136,12 +137,14 @@ def test_qwen3_moe_ep_is_separate_from_tp_invariant_rollout():
     assert plan.kernel_policy.ep_invariant_moe
     assert plan.kernel_policy.deterministic_moe_routing
     assert plan.kernel_policy.moe_topk_tiebreak == "stable_sort"
+    assert not plan.kernel_policy.disable_sglang_cuda_graph
     assert plan.env_vars["MODEL_ARGS_DISABLE_MOE_PERMUTE_FUSION"] == "1"
+    assert "--sglang-disable-cuda-graph" not in plan.train_args
     assert "--sglang-true-on-policy-contract qwen3_moe_true_on_policy_v1" in plan.train_args
     assert "--true-on-policy-contract qwen3_moe_true_on_policy_v1" in plan.train_args
 
 
-def test_true_on_policy_fast_decode_uses_prefill_only_deterministic_rollout():
+def test_true_on_policy_fast_decode_does_not_default_to_prefill_recompute():
     args = _args(
         model_name="Qwen3-30B-A3B",
         tensor_model_parallel_size=1,
@@ -158,10 +161,56 @@ def test_true_on_policy_fast_decode_uses_prefill_only_deterministic_rollout():
     assert plan.kernel_policy is not None
     assert not plan.kernel_policy.deterministic_inference
     assert plan.kernel_policy.prefill_only_deterministic_inference
+    assert not plan.kernel_policy.disable_sglang_cuda_graph
     assert "--sglang-enable-deterministic-inference" not in plan.train_args
     assert "--sglang-enable-prefill-only-deterministic-inference" in plan.train_args
+    assert "--sglang-disable-cuda-graph" not in plan.train_args
+    assert "--true-on-policy-fast-decode" in plan.train_args
+    assert "--recompute-logprobs-via-prefill" not in plan.train_args
+
+
+def test_true_on_policy_prefill_recompute_can_be_enabled_explicitly():
+    args = _args(
+        model_name="Qwen3-30B-A3B",
+        tensor_model_parallel_size=1,
+        context_parallel_size=2,
+        expert_model_parallel_size=4,
+        expert_tensor_parallel_size=1,
+        rollout_num_gpus_per_engine=4,
+        sglang_expert_parallel_size=4,
+        true_on_policy_fast_decode=True,
+        true_on_policy_recompute_logprobs_via_prefill=True,
+    )
+
+    plan = build_true_on_policy_launch_plan(args)
+
+    assert plan.kernel_policy is not None
+    assert not plan.kernel_policy.deterministic_inference
+    assert plan.kernel_policy.prefill_only_deterministic_inference
     assert "--true-on-policy-fast-decode" in plan.train_args
     assert "--recompute-logprobs-via-prefill" in plan.train_args
+
+
+def test_true_on_policy_fast_decode_can_skip_prefill_recompute():
+    args = _args(
+        model_name="Qwen3-30B-A3B",
+        tensor_model_parallel_size=1,
+        context_parallel_size=2,
+        expert_model_parallel_size=4,
+        expert_tensor_parallel_size=1,
+        rollout_num_gpus_per_engine=4,
+        sglang_expert_parallel_size=4,
+        true_on_policy_fast_decode=True,
+        true_on_policy_recompute_logprobs_via_prefill=False,
+    )
+
+    plan = build_true_on_policy_launch_plan(args)
+
+    assert plan.kernel_policy is not None
+    assert not plan.kernel_policy.deterministic_inference
+    assert plan.kernel_policy.prefill_only_deterministic_inference
+    assert "--true-on-policy-fast-decode" in plan.train_args
+    assert "--recompute-logprobs-via-prefill" not in plan.train_args
 
 
 def test_qwen3_moe_rollout_ep_does_not_enable_unverified_dp_attention():

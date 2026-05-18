@@ -34,6 +34,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     enable_mis: bool = False
     use_kl_loss: bool = True
     tis_use_rs: bool = True
+    true_on_policy_recompute_logprobs_via_prefill: bool = False
 
     def __post_init__(self):
         if self.train_backend == "megatron":

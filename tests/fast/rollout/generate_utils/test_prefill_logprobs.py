@@ -106,7 +106,7 @@ async def test_recompute_samples_flushes_each_batch_and_batches_prefill_score(mo
 
     monkeypatch.setattr(prefill_logprobs, "post", fake_post)
 
-    await prefill_logprobs.recompute_samples_rollout_logprobs_via_prefill(
+    metrics = await prefill_logprobs.recompute_samples_rollout_logprobs_via_prefill(
         args,
         samples,
         url="http://localhost/generate",
@@ -121,6 +121,9 @@ async def test_recompute_samples_flushes_each_batch_and_batches_prefill_score(mo
     assert [call[2] for call in calls] == ["post", "post"]
     assert calls[1][1]["input_ids"] == [[10, 11, 20], [10, 11, 21]]
     assert calls[1][1]["logprob_start_len"] == 0
+    assert metrics["prefill_logprobs_batch_count"] == 1
+    assert metrics["prefill_logprobs_sample_count"] == 2
+    assert metrics["prefill_logprobs_time"] >= 0
 
 
 @pytest.mark.asyncio
@@ -156,7 +159,7 @@ async def test_recompute_samples_batches_full_sequence_scoring(monkeypatch):
 
     monkeypatch.setattr(prefill_logprobs, "post", fake_post)
 
-    await prefill_logprobs.recompute_samples_rollout_logprobs_via_prefill(
+    metrics = await prefill_logprobs.recompute_samples_rollout_logprobs_via_prefill(
         args,
         samples,
         url="http://localhost/generate",
@@ -174,6 +177,8 @@ async def test_recompute_samples_batches_full_sequence_scoring(monkeypatch):
     ]
     assert calls[1][1]["logprob_start_len"] == 0
     assert calls[1][1]["input_ids"] == [[10, 11, 20], [10, 11, 12, 21], [10, 11, 22]]
+    assert metrics["prefill_logprobs_batch_count"] == 1
+    assert metrics["prefill_logprobs_sample_count"] == 3
 
 
 @pytest.mark.asyncio
@@ -209,7 +214,7 @@ async def test_recompute_samples_caps_prefill_scoring_batch_size(monkeypatch):
 
     monkeypatch.setattr(prefill_logprobs, "post", fake_post)
 
-    await prefill_logprobs.recompute_samples_rollout_logprobs_via_prefill(
+    metrics = await prefill_logprobs.recompute_samples_rollout_logprobs_via_prefill(
         args,
         samples,
         url="http://localhost/generate",
@@ -221,6 +226,8 @@ async def test_recompute_samples_caps_prefill_scoring_batch_size(monkeypatch):
     assert [sample.rollout_log_probs for sample in samples] == [
         [-(20 + i)] for i in range(5)
     ]
+    assert metrics["prefill_logprobs_batch_count"] == 3
+    assert metrics["prefill_logprobs_sample_count"] == 5
 
 
 def test_extract_response_logprobs_selects_aligned_window_before_padding():

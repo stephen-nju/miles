@@ -21,10 +21,16 @@ class ScriptArgs(BaseScriptArgs):
     true_on_policy: bool = True
     true_on_policy_contract: str | None = None
     true_on_policy_fast_decode: bool = False
+    true_on_policy_recompute_logprobs_via_prefill: bool = False
+    true_on_policy_default_rollout_ep: bool = True
 
     def __post_init__(self):
         super().__post_init__()
-        if self.sglang_expert_parallel_size == 1 and self.true_on_policy:
+        if (
+            self.sglang_expert_parallel_size == 1
+            and self.true_on_policy
+            and self.true_on_policy_default_rollout_ep
+        ):
             self.sglang_expert_parallel_size = self.expert_model_parallel_size
         if (
             self.true_on_policy

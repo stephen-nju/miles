@@ -149,6 +149,16 @@ def test_recompute_logprobs_via_prefill_flag_is_parsed():
     assert args.recompute_logprobs_via_prefill is True
 
 
+def test_true_on_policy_fast_decode_does_not_require_prefill_recompute_flag_to_parse():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+
+    args = parser.parse_args(["--true-on-policy-fast-decode"] + REQUIRED_ARGS)
+
+    assert args.true_on_policy_fast_decode is True
+    assert args.recompute_logprobs_via_prefill is False
+
+
 @pytest.mark.parametrize(
     (
         "rollout_num_gpus_per_engine",

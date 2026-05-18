@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import time
 from collections import defaultdict
 from collections.abc import Iterator, Mapping
 from typing import Any
 
-from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME, is_lora_enabled
 from miles.utils.http_utils import post
 from miles.utils.processing_utils import encode_image_for_rollout_engine
 from miles.utils.types import Sample
 
 _DEFAULT_PREFILL_SCORING_BATCH_SIZE = 4
+
+
+def _is_lora_enabled(args: Any) -> bool:
+    return getattr(args, "lora_rank", 0) > 0 or getattr(args, "lora_adapter_path", None) is not None
 
 
 def _build_prefill_scoring_payload(
@@ -39,7 +43,9 @@ def _build_prefill_scoring_payload(
         "logprob_start_len": 0,
     }
 
-    if is_lora_enabled(args):
+    if _is_lora_enabled(args):
+        from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME
+
         payload["lora_path"] = LORA_ADAPTER_NAME
 
     if sample.multimodal_inputs and sample.multimodal_inputs.get("images"):
@@ -183,17 +189,19 @@ async def recompute_samples_rollout_logprobs_via_prefill(
     *,
     url: str,
     sampling_params: Mapping[str, Any],
-) -> None:
+) -> dict[str, float | int]:
     if not getattr(args, "recompute_logprobs_via_prefill", False):
-        return
+        return {}
 
     samples_to_score = [
         sample for sample in samples if sample.response_length != 0 and sample.status != Sample.Status.ABORTED
     ]
     if not samples_to_score:
-        return
+        return {}
 
     flush_url = url.rsplit("/", 1)[0] + "/flush_cache"
+    start_time = time.perf_counter()
+    batch_count = 0
 
     if _can_batch_prefill_score(args, samples_to_score):
         samples_by_logprob_start_len: dict[int, list[Sample]] = defaultdict(list)
@@ -208,6 +216,7 @@ async def recompute_samples_rollout_logprobs_via_prefill(
                 await post(flush_url, {})
                 payload = _build_batch_prefill_scoring_payload(args, batch_samples, sampling_params)
                 outputs = await post(url, payload)
+                batch_count += 1
                 if not isinstance(outputs, list):
                     raise ValueError(f"SGLang batch prefill scoring returned {type(outputs).__name__}, expected list")
                 if len(outputs) != len(batch_samples):
@@ -223,7 +232,11 @@ async def recompute_samples_rollout_logprobs_via_prefill(
                         logprob_start_len=payload["logprob_start_len"],
                     )
                     _record_prefill_scoring_metadata(sample, meta_info)
-        return
+        return {
+            "prefill_logprobs_time": time.perf_counter() - start_time,
+            "prefill_logprobs_batch_count": batch_count,
+            "prefill_logprobs_sample_count": len(samples_to_score),
+        }
 
     for sample in samples_to_score:
         headers = None
@@ -239,3 +252,10 @@ async def recompute_samples_rollout_logprobs_via_prefill(
             sampling_params=sampling_params,
             headers=headers,
         )
+        batch_count += 1
+
+    return {
+        "prefill_logprobs_time": time.perf_counter() - start_time,
+        "prefill_logprobs_batch_count": batch_count,
+        "prefill_logprobs_sample_count": len(samples_to_score),
+    }
