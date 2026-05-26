@@ -40,3 +40,11 @@ def test_max_concurrent(rollout_env, expected_range):
     load_and_call_train(env.args, env.data_source)
     min_expected, max_expected = expected_range
     assert min_expected <= env.mock_server.max_concurrent <= max_expected
+
+
+if __name__ == "__main__":
+    import sys
+
+    import pytest
+
+    sys.exit(pytest.main([__file__, "-v"]))
