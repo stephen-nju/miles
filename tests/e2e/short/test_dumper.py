@@ -20,7 +20,7 @@ if str(_MILES_ROOT) not in sys.path:
 
 import typer
 from tests.ci.ci_register import register_cuda_ci
-from tests.e2e.conftest_dumper import (
+from tests.e2e._conftest_dumper import (
     MEGATRON_PATCHER_YAMLS,
     SGLANG_SOURCE_PATCHER_CONFIG_YAML,
     SOURCE_PATCHED_FIELDS,

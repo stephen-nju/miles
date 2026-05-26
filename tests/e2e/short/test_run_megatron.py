@@ -19,7 +19,7 @@ if str(_MILES_ROOT) not in sys.path:
 
 import typer
 from tests.ci.ci_register import register_cuda_ci
-from tests.e2e.conftest_dumper import MEGATRON_PATCHER_YAMLS, clear_proxy_env
+from tests.e2e._conftest_dumper import MEGATRON_PATCHER_YAMLS, clear_proxy_env
 
 import miles.utils.external_utils.command_utils as U
 from miles.utils.debug_utils.run_megatron.cli.parallel_utils import ParallelConfig, parse_parallel_args
