@@ -557,9 +557,16 @@ class TestCollectTestsSuspiciousPattern:
 def _is_semantic_default_register_cpu_ci(call: ast.Call) -> bool:
     """Mirror of `strip_default_cpu_register._is_default_form_register_cpu_ci`.
 
-    True when the call matches either the 3-kwarg full default form or the
-    2-kwarg omitted-`labels` form (both equivalent to the implicit fallback
-    synthesised by `collect_tests` for files under `tests/fast/`).
+    True when the call matches any of three semantically identical shapes
+    of the implicit-fallback default (all collapse to
+    `est_time=10, suite="stage-a-cpu", labels=[]` after AST extraction):
+
+    1. Full 3-kwarg form: `register_cpu_ci(est_time=10, suite="stage-a-cpu", labels=[])`.
+    2. Omitted-`labels` 2-kwarg form: `register_cpu_ci(est_time=10, suite="stage-a-cpu")`
+       (omitted `labels` defaults to `None` ≡ `[]` per
+       `_extract_list_constant`'s rule).
+    3. Explicit-None 3-kwarg form:
+       `register_cpu_ci(est_time=10, suite="stage-a-cpu", labels=None)`.
     """
     if not isinstance(call.func, ast.Name) or call.func.id != "register_cpu_ci":
         return False
@@ -577,7 +584,9 @@ def _is_semantic_default_register_cpu_ci(call: ast.Call) -> bool:
             if not isinstance(kw.value, ast.Constant) or kw.value.value != "stage-a-cpu":
                 return False
         elif kw.arg == "labels":
-            if not isinstance(kw.value, ast.List) or kw.value.elts:
+            is_empty_list = isinstance(kw.value, ast.List) and not kw.value.elts
+            is_literal_none = isinstance(kw.value, ast.Constant) and kw.value.value is None
+            if not (is_empty_list or is_literal_none):
                 return False
         else:
             return False
@@ -594,6 +603,10 @@ class TestNoSemanticDefaultRegisterCpuCi:
     no top-level register call, so a literal default-form caller is
     redundant. This test scans the real tree and fails on any reintroduced
     default to keep the codemod's guarantee enforced.
+
+    The default has three semantically-equivalent spellings (full
+    `labels=[]`, omitted-`labels`, and explicit `labels=None`); the
+    predicate matches all three so the guarantee is exhaustive.
     """
 
     def test_no_default_form_register_cpu_ci_in_tests_fast(self):
@@ -628,3 +641,58 @@ class TestNoSemanticDefaultRegisterCpuCi:
             "orphan import) or run scripts/tools/strip_default_cpu_register.py.\n"
             "Offenders:\n  " + "\n  ".join(offenders)
         )
+
+    # --- inline AST-fabrication unit tests for the predicate itself ---------
+    #
+    # The full-tree scan above passes vacuously today (no callers under
+    # tests/fast/ use the default form anymore). These fabricated AST nodes
+    # exercise each accepted shape and a few rejection cases directly, so a
+    # regression in the matching logic surfaces here without needing a real
+    # offender file to be committed.
+
+    @staticmethod
+    def _parse_call(src: str) -> ast.Call:
+        tree = ast.parse(src, mode="exec")
+        expr = tree.body[0]
+        assert isinstance(expr, ast.Expr) and isinstance(expr.value, ast.Call)
+        return expr.value
+
+    def test_predicate_accepts_full_empty_list_form(self):
+        call = self._parse_call('register_cpu_ci(est_time=10, suite="stage-a-cpu", labels=[])')
+        assert _is_semantic_default_register_cpu_ci(call)
+
+    def test_predicate_accepts_omitted_labels_form(self):
+        call = self._parse_call('register_cpu_ci(est_time=10, suite="stage-a-cpu")')
+        assert _is_semantic_default_register_cpu_ci(call)
+
+    def test_predicate_accepts_labels_none_literal_form(self):
+        # The third equivalence class Codex flagged: `labels=None` literal
+        # is identical to omitted / `labels=[]` per `_extract_list_constant`.
+        call = self._parse_call('register_cpu_ci(est_time=10, suite="stage-a-cpu", labels=None)')
+        assert _is_semantic_default_register_cpu_ci(call)
+
+    def test_predicate_rejects_nonempty_labels(self):
+        call = self._parse_call('register_cpu_ci(est_time=10, suite="stage-a-cpu", labels=["megatron"])')
+        assert not _is_semantic_default_register_cpu_ci(call)
+
+    def test_predicate_rejects_nondefault_est_time(self):
+        call = self._parse_call('register_cpu_ci(est_time=20, suite="stage-a-cpu", labels=[])')
+        assert not _is_semantic_default_register_cpu_ci(call)
+
+    def test_predicate_rejects_nondefault_suite(self):
+        call = self._parse_call('register_cpu_ci(est_time=10, suite="stage-b-cpu", labels=[])')
+        assert not _is_semantic_default_register_cpu_ci(call)
+
+    def test_predicate_rejects_extra_kwarg(self):
+        call = self._parse_call('register_cpu_ci(est_time=10, suite="stage-a-cpu", labels=[], nightly=True)')
+        assert not _is_semantic_default_register_cpu_ci(call)
+
+    def test_predicate_rejects_positional_args(self):
+        call = self._parse_call('register_cpu_ci(10, "stage-a-cpu")')
+        assert not _is_semantic_default_register_cpu_ci(call)
+
+    def test_predicate_rejects_labels_non_literal_name(self):
+        # `labels=SOME_NAME` is neither an empty-list literal nor a literal
+        # `None`; the predicate must keep its hands off the call.
+        call = self._parse_call('register_cpu_ci(est_time=10, suite="stage-a-cpu", labels=SOME_NAME)')
+        assert not _is_semantic_default_register_cpu_ci(call)

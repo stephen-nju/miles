@@ -7,20 +7,21 @@ with the collector's implicit fallback. This script removes those calls
 plus the now-orphan `from tests.ci.ci_register import register_cpu_ci`
 imports.
 
-Two shapes count as the semantic default:
+Three shapes all count as the same semantic default (per
+`register_cpu_ci`'s signature `labels: list[str] | None = None` and
+`_extract_list_constant`'s rule that literal `None` is treated as `[]`):
 
 1. The full 3-kwarg form `register_cpu_ci(est_time=10, suite="stage-a-cpu", labels=[])`.
 2. The 2-kwarg form `register_cpu_ci(est_time=10, suite="stage-a-cpu")` that
-   omits `labels=` entirely. Per `register_cpu_ci`'s signature, an omitted
-   `labels` defaults to `None`, which `_extract_list_constant` treats as `[]`
-   -- so this is semantically identical to shape 1.
+   omits `labels=` entirely (omitted `labels` defaults to `None`, which
+   `_extract_list_constant` flattens to `[]`).
+3. The 3-kwarg form `register_cpu_ci(est_time=10, suite="stage-a-cpu", labels=None)`
+   with an explicit literal `None` (identical semantics to shapes 1 and 2).
 
 The script is intentionally conservative for everything else:
 - Any deviation in `est_time` / `suite` values, any positional args, any
-  extra kwargs (`nightly`, `disabled`), any non-empty `labels`, or an
-  explicit `labels=None` literal (ambiguous spelling -- author may have
-  intended to make the always-run intent explicit) leaves the call in
-  place as an explicit override.
+  extra kwargs (`nightly`, `disabled`), or any non-empty `labels` list
+  leaves the call in place as an explicit override.
 - Only removes the import when no remaining `register_cpu_ci` /
   `register_cuda_ci` symbol reference survives in the file.
 - Only touches files under `tests/fast/`; other subtrees are off-limits.
@@ -44,17 +45,20 @@ DEFAULT_SUITE = "stage-a-cpu"
 def _is_default_form_register_cpu_ci(call: ast.Call) -> bool:
     """True iff this Call is a semantic-default `register_cpu_ci`.
 
-    Two shapes count as semantic default and are accepted here:
+    Three shapes count as semantic default and are accepted here -- all
+    three are semantically identical per `register_cpu_ci`'s signature
+    (`labels: list[str] | None = None`) and `_extract_list_constant`'s
+    rule that literal ``None`` is treated as ``[]``:
 
     1. Full 3-kwarg form: ``register_cpu_ci(est_time=10, suite="stage-a-cpu", labels=[])``.
-    2. Omitted-``labels`` 2-kwarg form: ``register_cpu_ci(est_time=10, suite="stage-a-cpu")``.
-       Per `register_cpu_ci`'s signature, an omitted ``labels`` defaults to
-       ``None``, which `_extract_list_constant` treats as ``[]`` -- so this is
-       semantically identical to shape 1.
+    2. Omitted-``labels`` 2-kwarg form: ``register_cpu_ci(est_time=10, suite="stage-a-cpu")``
+       (omitted ``labels`` defaults to ``None`` ≡ ``[]``).
+    3. Explicit-None 3-kwarg form: ``register_cpu_ci(est_time=10, suite="stage-a-cpu", labels=None)``.
 
-    Any positional args, deviating values, extra kwargs (`nightly`,
-    `disabled`), non-empty `labels`, or an explicit `labels=None` literal
-    (ambiguous spelling -- conservatively keep) disqualify the call.
+    Any positional args, deviating ``est_time`` / ``suite`` values, extra
+    kwargs (`nightly`, `disabled`), non-empty ``labels`` list, or any
+    other ``labels=`` value (e.g. a name, call expression, non-empty
+    list) disqualify the call.
     """
     if not isinstance(call.func, ast.Name) or call.func.id != "register_cpu_ci":
         return False
@@ -72,10 +76,14 @@ def _is_default_form_register_cpu_ci(call: ast.Call) -> bool:
             if not isinstance(kw.value, ast.Constant) or kw.value.value != DEFAULT_SUITE:
                 return False
         elif kw.arg == "labels":
-            # Only the literal empty-list spelling counts; `labels=None` is
-            # ambiguous (author may want to make always-run intent explicit)
-            # and is deliberately rejected.
-            if not isinstance(kw.value, ast.List) or kw.value.elts:
+            # Accept both the literal empty-list spelling (`labels=[]`) and
+            # the literal `None` spelling (`labels=None`). Both are
+            # semantically identical to omitting `labels=` entirely; the
+            # signature default is `None` and `_extract_list_constant`
+            # flattens `None` to `[]`.
+            is_empty_list = isinstance(kw.value, ast.List) and not kw.value.elts
+            is_literal_none = isinstance(kw.value, ast.Constant) and kw.value.value is None
+            if not (is_empty_list or is_literal_none):
                 return False
         else:
             return False
