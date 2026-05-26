@@ -118,14 +118,15 @@ missing a hook. Open an issue.
 
 ```text
 tests/
-├── fast/             # fast, no GPU
+├── fast/             # fast, no GPU (location-as-registration: stage-a-cpu by default)
+├── fast-gpu/         # fast GPU tests (explicit register_cuda_ci required)
 ├── ci/               # CI-gated suite
 ├── e2e/              # end-to-end (spins up Ray + SGLang)
 └── utils/            # shared test helpers
 ```
 
-Run `pytest tests/fast` for a quick check; run `tests/e2e` before landing anything that
-touches the train loop.
+Run `pytest tests/fast` for a quick CPU check (`pytest tests/fast-gpu` if you have a GPU);
+run `tests/e2e` before landing anything that touches the train loop.
 
 ## Where to look first when reading the code
 
