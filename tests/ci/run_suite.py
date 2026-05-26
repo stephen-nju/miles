@@ -208,7 +208,7 @@ def run_a_suite(args):
     ] + glob.glob("tests/utils/test_*.py")
     files = e2e_files + fast_files
 
-    all_tests = collect_tests(files, sanity_check=False)
+    all_tests = collect_tests(files, sanity_check=True)
     stripped_labels = strip_run_ci_prefix(args.labels or [])
     ci_tests, skipped_tests = filter_tests(
         all_tests,
