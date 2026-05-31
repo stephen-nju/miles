@@ -3,19 +3,20 @@ import random
 import socket
 from argparse import Namespace
 from contextlib import nullcontext
+from typing import TYPE_CHECKING
 
 import ray
 import torch
 import torch.distributed as dist
 from ray.actor import ActorHandle
 from torch_memory_saver import torch_memory_saver
-from transformers import AutoConfig
 
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import train_dump_utils
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group, init_process_group
 from miles.utils.event_logger.logger import event_logger_context
+from miles.utils.hf_config import load_hf_config
 from miles.utils.indep_dp import IndepDPInfo
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.processing_utils import load_tokenizer
@@ -48,6 +49,9 @@ from .replay_utils import get_register_replay_list_func
 from .update_weight.common import named_params_and_buffers
 from .update_weight.update_weight_from_distributed.broadcast import UpdateWeightFromDistributed
 from .update_weight.update_weight_from_tensor import UpdateWeightFromTensor
+
+if TYPE_CHECKING:
+    from miles.ray.rollout.rollout_manager import EnginesAndLock
 
 logging.getLogger("megatron").setLevel(logging.WARNING)
 
@@ -112,7 +116,7 @@ class MegatronTrainRayActor(TrainRayActor):
         # read config and tokenizer serialized to prevent concurrent writing bug.
         for i in range(dist.get_world_size()):
             if i == dist.get_rank():
-                self.hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
+                self.hf_config = load_hf_config(args.hf_checkpoint)
                 self.tokenizer = load_tokenizer(
                     self.args.hf_checkpoint, chat_template_path=self.args.chat_template_path, trust_remote_code=True
                 )
@@ -182,7 +186,8 @@ class MegatronTrainRayActor(TrainRayActor):
             single_tag=None if args.enable_weights_backuper else "actor",
         )
         self._active_model_tag: str | None = "actor"
-        self.weights_backuper.backup("actor")
+        if self._enable_weight_backup:
+            self.weights_backuper.backup("actor")
 
         if with_ref:
             self.load_other_checkpoint("ref", args.ref_load)
@@ -217,10 +222,10 @@ class MegatronTrainRayActor(TrainRayActor):
         self.rollout_engines = None
 
         self.rollout_data_postprocess = None
-        if self.args.rollout_data_postprocess_path is not None:
+        if (x := self.args.rollout_data_postprocess_path) is not None:
             from miles.utils.misc import load_function
 
-            self.rollout_data_postprocess = load_function(self.args.rollout_data_postprocess_path)
+            self.rollout_data_postprocess = load_function(x)
 
         self.prof.on_init_end()
 
@@ -256,7 +261,14 @@ class MegatronTrainRayActor(TrainRayActor):
         reload_process_groups()
         print_memory("after wake_up model")
 
+    @property
+    def _enable_weight_backup(self) -> bool:
+        """Weight backup is only needed for CPU-side model switching or colocated tensor weight sync."""
+        return self.with_ref or self.args.keep_old_actor or self.args.colocate
+
     def _switch_model(self, target_tag: str) -> None:
+        if not self._enable_weight_backup:
+            return
         if target_tag not in self.weights_backuper.backup_tags:
             raise ValueError(f"Cannot switch to unknown model tag: {target_tag}")
         self.weights_backuper.restore(target_tag)
@@ -509,7 +521,10 @@ class MegatronTrainRayActor(TrainRayActor):
 
         if train_step_outcome == TrainStepOutcome.NORMAL:
             # update the cpu actor weight to the latest model
-            self.weights_backuper.backup("actor")
+            if self._enable_weight_backup:
+                self.weights_backuper.backup("actor")
+            else:
+                torch.cuda.synchronize()
 
             # Update ref model if needed
             if (
@@ -556,24 +571,22 @@ class MegatronTrainRayActor(TrainRayActor):
             destroy_process_groups()
 
     @timer
-    def update_weights(self) -> None:
+    def update_weights(self, info: "EnginesAndLock") -> None:
         self._heartbeat.bump()
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return
 
-        if self.args.use_fault_tolerance:
-            if dist.get_rank() == 0:
-                ray.get(self.rollout_manager.recover_updatable_engines.remote())
-            dist.barrier(group=get_gloo_group())
-
-        rollout_engines, rollout_engine_lock, num_new_engines, engine_gpu_counts, engine_gpu_offsets = ray.get(
-            self.rollout_manager.get_updatable_engines_and_lock.remote()
-        )
+        rollout_engines = info.rollout_engines
+        rollout_engine_lock = info.rollout_engine_lock
+        has_new_engines = info.has_new_engines
+        engine_gpu_counts = info.engine_gpu_counts
+        engine_gpu_offsets = info.engine_gpu_offsets
+        del info
 
         if self.args.offload_train:
             reload_process_groups()
 
-        if num_new_engines > 0:
+        if has_new_engines:
             self.weight_updater.connect_rollout_engines(
                 rollout_engines,
                 rollout_engine_lock,
@@ -582,7 +595,7 @@ class MegatronTrainRayActor(TrainRayActor):
             )
             dist.barrier(group=get_gloo_group())
             if dist.get_rank() == 0:
-                ray.get(self.rollout_manager.clear_updatable_num_new_engines.remote())
+                ray.get(self.rollout_manager.clear_updatable_has_new_engines.remote())
 
         if self.args.debug_skip_weight_update:
             if dist.get_rank() == 0:

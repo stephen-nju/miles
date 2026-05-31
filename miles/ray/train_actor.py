@@ -3,7 +3,7 @@ import logging
 import os
 import random
 from datetime import timedelta
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import ray
 import torch
@@ -18,6 +18,10 @@ from miles.utils.logging_utils import configure_logger
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.process_identity import TrainProcessIdentity
 from miles.utils.test_utils.fault_injector import inject_fault as _inject_fault
+
+if TYPE_CHECKING:
+    from miles.ray.rollout.rollout_manager import EnginesAndLock
+
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +159,7 @@ class TrainRayActor(RayActor):
         raise NotImplementedError
 
     @abc.abstractmethod
-    def update_weights(self):
+    def update_weights(self, info: "EnginesAndLock") -> None:
         raise NotImplementedError
 
     @abc.abstractmethod

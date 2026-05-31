@@ -16,6 +16,8 @@ try:
 except ImportError:
     pq = None
 
+from miles.utils import chat_template_utils
+from miles.utils.processing_utils import call_processor
 from miles.utils.types import MultimodalTypes, Sample
 
 from .timer import Timer
@@ -97,7 +99,7 @@ def filter_long_prompt(origin_samples: list[Sample], tokenizer, processor, max_l
             from miles.utils.processing_utils import process_vision_info
 
             multimodal_inputs = process_vision_info(sample.prompt, processor)
-            processor_output = processor(text=sample.prompt, **multimodal_inputs)
+            processor_output = call_processor(processor, sample.prompt, multimodal_inputs)
             input_ids = processor_output["input_ids"][0]
             if len(input_ids) <= max_length:
                 filtered_samples.append(sample)
@@ -203,8 +205,9 @@ class Dataset:
                 metadata["tools"] = tools
 
             if apply_chat_template:
-                output_prompt = tokenizer.apply_chat_template(
+                output_prompt = chat_template_utils.apply_chat_template(
                     prompt,
+                    tokenizer=tokenizer,
                     tools=tools,
                     tokenize=False,
                     add_generation_prompt=True,

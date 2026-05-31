@@ -9,7 +9,7 @@ from ray.util.state import list_nodes
 from miles.utils.async_utils import eager_create_task
 from miles.utils.environ import enable_experimental_ft_trainer
 
-from .rollout import RolloutManager
+from .rollout.rollout_manager import RolloutManager
 
 logger = logging.getLogger(__name__)
 
