@@ -122,6 +122,7 @@ class DumperMegatronUtil:
         merged = {
             "dir": str(_get_dir(args)),
             "exp_name": phase.value,
+            "enable_output_console": False,
             **overrides,
         }
 
