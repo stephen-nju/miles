@@ -42,7 +42,8 @@ class ParallelState:
     vpp_size: int | None = 1
     microbatch_group_size_per_vp_stage: int | None = None
 
-    def _dp_mode(self):
+    @property
+    def _dp_mode(self) -> _DPMode:
         intra_trivial = self.intra_dp.rank == 0 and self.intra_dp.size == 1
         indep_trivial = self.indep_dp.rank == 0 and self.indep_dp.size == 1
         assert intra_trivial or indep_trivial, "intra_dp and indep_dp cannot both be non-trivial"
