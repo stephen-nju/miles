@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 from .deepseekv3 import convert_deepseekv3_to_hf
 from .glm4 import convert_glm4_to_hf
 from .glm4moe import convert_glm4moe_to_hf
@@ -9,6 +11,12 @@ from .qwen2 import convert_qwen2_to_hf
 from .qwen3_5 import convert_qwen3_5_to_hf
 from .qwen3_next import convert_qwen3_next_to_hf
 from .qwen3moe import convert_qwen3moe_to_hf
+
+
+@dataclass(frozen=True)
+class AtomicUpdateGroup:
+    key: str
+    names: tuple[str, ...]
 
 
 # TODO unify w/ `convert_to_hf`
@@ -27,8 +35,8 @@ def convert_to_hf(args, model_name, name, param, quantization_config=None):
     return quantize_params(args, name, converted_named_tensors, quantization_config)
 
 
-def get_atomic_update_group(model_name, name):
-    return None
+def get_atomic_update_groups(model_name, param_infos) -> list[AtomicUpdateGroup]:
+    return []
 
 
 # TODO optimize
