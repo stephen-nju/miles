@@ -273,6 +273,275 @@ class _PGWorker:
             work = self._pg.allreduce([tensor], opts)
             work.wait()
 
+    # ------------------------------------------------------------------ #
+    # Recovery experiment: reproduce the miles indep_dp teardown hang and
+    # compare candidate teardown strategies. See the `run_recovery` command.
+    # ------------------------------------------------------------------ #
+
+    def init_recovery(
+        self,
+        *,
+        store_addr_q0: str,
+        store_addr_q1: str,
+        rank: int,
+        world_size: int,
+        timeout_s: float,
+        nonblocking_timeout_override: str | None = None,
+        prime_native: bool = False,
+        store_host: str | None = None,
+        store_port: int | None = None,
+        with_gloo: bool = False,
+    ) -> dict:
+        """Configure a torchft NCCL PG (quorum 0) and report the abort-capability flags.
+
+        Mirrors miles ``create_indep_dp_group``: a fresh ``ProcessGroupNCCL``
+        wrapper + ``configure``. ``store_addr_q1`` is kept for the later
+        reconfigure-to-singleton step (what a lone surviving cell does).
+
+        Two knobs reproduce the production context the minimal repro lacks:
+          - ``nonblocking_timeout_override``: set ``TORCH_NCCL_NONBLOCKING_TIMEOUT``
+            in THIS actor before constructing the PG. torchft only sets it if unset,
+            so a pre-set large value (e.g. "600") is what governs ncclCommAbort's wait.
+          - ``prime_native``: first create a *native* (blocking) ``ProcessGroupNCCL``
+            and run an allreduce — like megatron initializing NCCL before indep_dp.
+            Tests whether torch caches the nonblocking timeout process-globally at the
+            first PG, making torchft's later env-set ineffective.
+        """
+        import torch
+        from torch.distributed import TCPStore
+
+        self._rank = rank
+        self._world_size = world_size
+        self._timeout_s = timeout_s
+        self._store_addr_q1 = store_addr_q1
+        self._device = torch.device(f"cuda:{torch.cuda.current_device()}")
+
+        env_before = os.environ.get("TORCH_NCCL_NONBLOCKING_TIMEOUT")
+        if nonblocking_timeout_override is not None:
+            os.environ["TORCH_NCCL_NONBLOCKING_TIMEOUT"] = nonblocking_timeout_override
+
+        primed = False
+        if prime_native and store_host is not None and store_port is not None:
+            import torch.distributed as dist
+
+            native_store = TCPStore(
+                host_name=store_host, port=store_port, is_master=False, wait_for_workers=False
+            )
+            dist.init_process_group(
+                backend="nccl",
+                store=dist.PrefixStore("native_prime", native_store),
+                rank=rank,
+                world_size=world_size,
+            )
+            t = torch.ones(1024, device=self._device) * (rank + 1.0)
+            dist.all_reduce(t)
+            torch.cuda.synchronize()
+            primed = True
+
+        from torchft.process_group import ProcessGroupGloo, ProcessGroupNCCL
+
+        self._pg = ProcessGroupNCCL(timeout=timedelta(seconds=timeout_s))
+        self._pg.configure(
+            store_addr=store_addr_q0,
+            replica_id=str(rank),
+            rank=rank,
+            world_size=world_size,
+            quorum_id=0,
+        )
+
+        # Mirror miles create_indep_dp_group, which also builds a Gloo PG and tears
+        # both down in reconfigure. Gloo has no ncclCommAbort; its destructor can
+        # block on a TCP socket to a dead peer.
+        self._gloo_pg = None
+        if with_gloo:
+            self._gloo_pg = ProcessGroupGloo(timeout=timedelta(seconds=timeout_s))
+            self._gloo_pg.configure(
+                store_addr=f"{store_addr_q0}/gloo",
+                replica_id=str(rank),
+                rank=rank,
+                world_size=world_size,
+                quorum_id=0,
+            )
+
+        return {
+            "rank": rank,
+            "nccl_version": torch.cuda.nccl.version(),
+            "use_abort": self._pg._use_abort,
+            "with_gloo": with_gloo,
+            "env_before": env_before,
+            "nonblocking_timeout_env": os.environ.get("TORCH_NCCL_NONBLOCKING_TIMEOUT"),
+            "primed_native": primed,
+            "device": str(self._device),
+        }
+
+    def survivor_detect(self, *, tensor_size: int, max_iters: int = 100_000) -> dict:
+        """Loop allreduce until the peer's death is detected (the torchft-idiomatic path).
+
+        ``ProcessGroupNCCL.allreduce`` returns a ``_WorkAcceleratorTimeout`` whose
+        ``wait()`` arms a userspace ``context_timeout`` that fires ``pg.abort()``
+        after ``timeout_s``. So when the peer dies mid-flight, the in-flight comm
+        is aborted *here*, during the failed wait — not at teardown. This is the
+        crux of why torchft's reconfigure can be fast.
+        """
+        import torch
+        import torch.distributed as dist
+
+        tensor = torch.ones(tensor_size, device=self._device) * (self._rank + 1.0)
+        opts = dist.AllreduceOptions()
+        opts.reduceOp = dist.ReduceOp.SUM
+
+        start = time.monotonic()
+        count = 0
+        status = "still_running"
+        err = None
+        try:
+            for _ in range(max_iters):
+                work = self._pg.allreduce([tensor], opts)
+                if not work.wait():
+                    status = "wait_false"
+                    break
+                count += 1
+            else:
+                status = "exhausted_iters"
+        except Exception as e:
+            status = "exception"
+            err = f"{type(e).__name__}: {e}"
+
+        elapsed = time.monotonic() - start
+        try:
+            errored_after = str(self._pg.errored())
+        except Exception as e:
+            errored_after = f"errored() raised {type(e).__name__}: {e}"
+
+        return {
+            "rank": self._rank,
+            "status": status,
+            "count": count,
+            "error": err,
+            "detect_elapsed_s": round(elapsed, 2),
+            "errored_after": errored_after,
+        }
+
+    def survivor_launch_inflight(self, *, tensor_size: int) -> dict:
+        """Launch an allreduce WITHOUT waiting, leaving the collective in-flight.
+
+        Used for the no-abort variant: the peer dies while this kernel is still
+        enqueued and no ``wait()`` ever fires the userspace abort, so a subsequent
+        teardown is forced to drain a stuck-on-NVLink collective itself.
+        """
+        import torch
+        import torch.distributed as dist
+
+        tensor = torch.ones(tensor_size, device=self._device) * (self._rank + 1.0)
+        opts = dist.AllreduceOptions()
+        opts.reduceOp = dist.ReduceOp.SUM
+        self._inflight_work = self._pg.allreduce([tensor], opts)
+        self._inflight_tensor = tensor
+        return {"rank": self._rank, "status": "launched"}
+
+    def survivor_teardown(self, *, strategy: str, daemon_join_s: float = 20.0) -> dict:
+        """Tear down the dead-peer PG and reconfigure to a singleton quorum.
+
+        Strategies mirror the candidate miles fixes:
+          - ``manager_idiomatic``: reuse the SAME wrapper, call ``configure(q1, world_size=1)``
+            (the torchft ``Manager`` pattern; ``configure`` internally ``abort(errored=False)``).
+          - ``shutdown_new``: ``old.shutdown()`` then a fresh wrapper (miles pre-fix; the
+            blocking C++ ``~ProcessGroupNCCL`` runs when the last ref drops).
+          - ``abort_new``: ``old.abort(errored=False)`` then a fresh wrapper.
+          - ``daemon_shutdown``: ``old.shutdown()`` on a daemon thread with a join
+            timeout, then a fresh wrapper (the current miles fix).
+        """
+        import threading
+
+        from torchft.process_group import ProcessGroupNCCL
+
+        start = time.monotonic()
+        note = None
+
+        def _fresh_singleton() -> None:
+            self._pg = ProcessGroupNCCL(timeout=timedelta(seconds=self._timeout_s))
+            self._pg.configure(
+                store_addr=self._store_addr_q1,
+                replica_id=str(self._rank),
+                rank=0,
+                world_size=1,
+                quorum_id=1,
+            )
+
+        if strategy == "manager_idiomatic":
+            self._pg.configure(
+                store_addr=self._store_addr_q1,
+                replica_id=str(self._rank),
+                rank=0,
+                world_size=1,
+                quorum_id=1,
+            )
+        elif strategy == "shutdown_new":
+            old = self._pg
+            old.shutdown()
+            del old
+            _fresh_singleton()
+        elif strategy == "abort_new":
+            old = self._pg
+            old.abort(errored=False)
+            del old
+            _fresh_singleton()
+        elif strategy == "daemon_shutdown":
+            old = self._pg
+            t = threading.Thread(target=old.shutdown, name="pg-shutdown", daemon=True)
+            t.start()
+            t.join(daemon_join_s)
+            if t.is_alive():
+                note = f"old shutdown still blocked after {daemon_join_s}s; abandoned"
+            del old
+            _fresh_singleton()
+        else:
+            raise ValueError(f"unknown strategy {strategy}")
+
+        nccl_elapsed = time.monotonic() - start
+
+        # Tear down the Gloo PG the same way reconfigure_indep_dp_group does.
+        gloo_elapsed = None
+        if getattr(self, "_gloo_pg", None) is not None:
+            gloo_start = time.monotonic()
+            if strategy == "daemon_shutdown":
+                gt = threading.Thread(target=self._gloo_pg.shutdown, name="gloo-shutdown", daemon=True)
+                gt.start()
+                gt.join(daemon_join_s)
+                if gt.is_alive():
+                    note = (note or "") + f" gloo shutdown still blocked after {daemon_join_s}s"
+            elif strategy == "abort_new":
+                self._gloo_pg.abort(errored=False)
+            else:
+                self._gloo_pg.shutdown()
+            self._gloo_pg = None
+            gloo_elapsed = round(time.monotonic() - gloo_start, 2)
+
+        return {
+            "rank": self._rank,
+            "strategy": strategy,
+            "teardown_elapsed_s": round(nccl_elapsed, 2),
+            "gloo_teardown_s": gloo_elapsed,
+            "note": note,
+        }
+
+    def verify_singleton(self) -> dict:
+        """Confirm the survivor's new singleton (world_size=1) PG is functional."""
+        import torch
+        import torch.distributed as dist
+
+        tensor = torch.ones(8, device=self._device) * 7.0
+        opts = dist.AllreduceOptions()
+        opts.reduceOp = dist.ReduceOp.SUM
+        start = time.monotonic()
+        ok = self._pg.allreduce([tensor], opts).wait()
+        return {
+            "rank": self._rank,
+            "ok": bool(ok),
+            "value": tensor[0].item(),
+            "elapsed_s": round(time.monotonic() - start, 2),
+        }
+
     def die_os_exit(self) -> None:
         os._exit(1)
 
@@ -735,6 +1004,192 @@ def run_p2p_after_reconfig(
         except Exception:
             pass
     del store
+    print()
+
+
+def _run_recovery_once(
+    *,
+    strategy: str,
+    pre_detect: bool,
+    timeout_s: float,
+    tensor_size: int,
+    die_after_s: float,
+    teardown_budget_s: float,
+    nonblocking_timeout_override: str | None = None,
+    prime_native: bool = False,
+    with_gloo: bool = False,
+) -> dict:
+    """One recovery trial: 2-rank NVLink PG, peer dies mid-allreduce, survivor recovers.
+
+    ``pre_detect=True`` lets the survivor's ``wait()`` fire torchft's userspace abort
+    during the failed collective (the idiomatic path) before tearing down.
+    ``pre_detect=False`` leaves the collective in-flight (no abort) so teardown must
+    drain it — the regime that hangs on NVLink. Returns a verdict dict; a teardown
+    that exceeds ``teardown_budget_s`` is reported as a HANG (not waited out).
+    """
+    from torch.distributed import TCPStore
+
+    store = TCPStore(host_name="localhost", port=0, is_master=True, wait_for_workers=False)
+    base = f"localhost:{store.port}/recovery"
+    store_addr_q0 = f"{base}/q0"
+    store_addr_q1 = f"{base}/q1"
+
+    label = f"strategy={strategy} pre_detect={pre_detect} override={nonblocking_timeout_override} prime={prime_native}"
+    print(f"\n{'='*70}\n  RECOVERY: {label}  timeout={timeout_s}s die_after={die_after_s}s\n{'='*70}\n")
+
+    workers = [_PGWorker.remote() for _ in range(2)]
+    init = ray.get([
+        w.init_recovery.remote(
+            store_addr_q0=store_addr_q0,
+            store_addr_q1=store_addr_q1,
+            rank=i,
+            world_size=2,
+            timeout_s=timeout_s,
+            nonblocking_timeout_override=nonblocking_timeout_override,
+            prime_native=prime_native,
+            store_host="localhost",
+            store_port=store.port,
+            with_gloo=with_gloo,
+        )
+        for i, w in enumerate(workers)
+    ])
+    for r in init:
+        print(f"  init: {r}")
+
+    victim, survivor = workers[0], workers[1]
+    verdict = {"strategy": strategy, "pre_detect": pre_detect, "nccl_version": init[0]["nccl_version"],
+               "use_abort": init[0]["use_abort"]}
+
+    # Peer launches continuous allreduce then os._exit's mid-flight.
+    victim_ref = victim.run_allreduce_then_die.remote(tensor_size=tensor_size, die_after_s=die_after_s)
+
+    if pre_detect:
+        # Survivor loops allreduce; the failed wait() fires torchft's userspace abort.
+        detect_start = time.monotonic()
+        try:
+            detect = ray.get(
+                survivor.survivor_detect.remote(tensor_size=tensor_size),
+                timeout=die_after_s + timeout_s + 60,
+            )
+            print(f"  detect: {detect}")
+            verdict["detect"] = detect
+        except ray.exceptions.GetTimeoutError:
+            verdict["detect"] = f"DETECT HANG > {time.monotonic()-detect_start:.0f}s"
+            print(f"  detect: {verdict['detect']}")
+    else:
+        # Leave a collective in-flight with no wait → no userspace abort fires.
+        print(f"  launch: {ray.get(survivor.survivor_launch_inflight.remote(tensor_size=tensor_size))}")
+        time.sleep(die_after_s + 3)  # let the peer die while the collective is stuck
+
+    try:
+        ray.get(victim_ref, timeout=die_after_s + 10)
+    except Exception as e:
+        print(f"  victim dead: {type(e).__name__}")
+
+    # The decisive step: tear down the dead-peer comm + reconfigure to singleton.
+    teardown_start = time.monotonic()
+    try:
+        teardown = ray.get(
+            survivor.survivor_teardown.remote(strategy=strategy),
+            timeout=teardown_budget_s,
+        )
+        print(f"  teardown: {teardown}")
+        verdict["teardown"] = teardown
+
+        verify = ray.get(survivor.verify_singleton.remote(), timeout=30)
+        print(f"  verify: {verify}")
+        verdict["verify"] = verify
+        verdict["result"] = "RECOVERED" if verify.get("ok") else "TEARDOWN_OK_VERIFY_FAILED"
+    except ray.exceptions.GetTimeoutError:
+        hung_for = time.monotonic() - teardown_start
+        verdict["teardown"] = f"HANG > {hung_for:.0f}s (budget {teardown_budget_s}s)"
+        verdict["result"] = "HANG"
+        print(f"  teardown: {verdict['teardown']}  <<< TEARDOWN HANG CONFIRMED")
+    except Exception as e:
+        verdict["teardown"] = f"{type(e).__name__}: {e}"
+        verdict["result"] = "ERROR"
+        print(f"  teardown: {verdict['teardown']}")
+
+    for w in workers:
+        try:
+            ray.kill(w, no_restart=True)
+        except Exception:
+            pass
+    del store
+    print(f"  => {verdict.get('result')}\n")
+    return verdict
+
+
+@app.command()
+def run_recovery(
+    strategy: Annotated[
+        str, typer.Option(help="manager_idiomatic | shutdown_new | abort_new | daemon_shutdown")
+    ] = "manager_idiomatic",
+    pre_detect: Annotated[bool, typer.Option(help="Let userspace abort fire during the failed wait first")] = True,
+    timeout_s: Annotated[float, typer.Option(help="torchft PG timeout (also the userspace abort deadline)")] = 20.0,
+    tensor_size: Annotated[int, typer.Option(help="allreduce size; larger keeps the collective in-flight longer")] = 100_000_000,
+    die_after_s: Annotated[float, typer.Option(help="peer os._exit's this long after starting")] = 2.0,
+    teardown_budget_s: Annotated[float, typer.Option(help="ray.get timeout for teardown; exceeding = HANG")] = 90.0,
+    nonblocking_timeout_override: Annotated[
+        str | None, typer.Option(help="Pre-set TORCH_NCCL_NONBLOCKING_TIMEOUT in the actor (e.g. '600')")
+    ] = None,
+    prime_native: Annotated[
+        bool, typer.Option(help="Create a native NCCL PG + allreduce first (mimics megatron init)")
+    ] = False,
+    with_gloo: Annotated[
+        bool, typer.Option(help="Also create + tear down a torchft Gloo PG (mirrors indep_dp gloo_group)")
+    ] = False,
+) -> None:
+    """Run a single recovery trial."""
+    ray.init(ignore_reinit_error=True)
+    _run_recovery_once(
+        strategy=strategy,
+        pre_detect=pre_detect,
+        timeout_s=timeout_s,
+        tensor_size=tensor_size,
+        die_after_s=die_after_s,
+        teardown_budget_s=teardown_budget_s,
+        nonblocking_timeout_override=nonblocking_timeout_override,
+        prime_native=prime_native,
+        with_gloo=with_gloo,
+    )
+
+
+@app.command()
+def run_recovery_all(
+    timeout_s: Annotated[float, typer.Option()] = 20.0,
+    tensor_size: Annotated[int, typer.Option()] = 100_000_000,
+    die_after_s: Annotated[float, typer.Option()] = 2.0,
+    teardown_budget_s: Annotated[float, typer.Option()] = 90.0,
+) -> None:
+    """Run the full strategy × {abort-fired, in-flight-no-abort} matrix and print a verdict table."""
+    ray.init(ignore_reinit_error=True)
+
+    strategies = ["manager_idiomatic", "shutdown_new", "abort_new", "daemon_shutdown"]
+    verdicts = []
+    for pre_detect in [True, False]:
+        for strategy in strategies:
+            try:
+                verdicts.append(
+                    _run_recovery_once(
+                        strategy=strategy,
+                        pre_detect=pre_detect,
+                        timeout_s=timeout_s,
+                        tensor_size=tensor_size,
+                        die_after_s=die_after_s,
+                        teardown_budget_s=teardown_budget_s,
+                    )
+                )
+            except Exception as e:
+                print(f"  TRIAL FAILED ({strategy}, pre_detect={pre_detect}): {e}\n")
+                verdicts.append({"strategy": strategy, "pre_detect": pre_detect, "result": f"TRIAL_ERROR: {e}"})
+
+    print(f"\n{'='*70}\n  RECOVERY VERDICT TABLE\n{'='*70}")
+    print(f"  {'strategy':<20} {'pre_detect':<11} {'result':<26} teardown")
+    for v in verdicts:
+        td = v.get("teardown")
+        td_s = td.get("teardown_elapsed_s") if isinstance(td, dict) else td
+        print(f"  {v.get('strategy',''):<20} {str(v.get('pre_detect','')):<11} {str(v.get('result','')):<26} {td_s}")
     print()
 
 
