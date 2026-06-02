@@ -20,7 +20,7 @@ from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.ray_utils import Box
 from miles.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
-from miles.utils.replay_base import all_replay_managers
+from miles.utils.replay_base import all_replay_managers, routing_replay_manager
 from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils import init_tracking
 from miles.utils.types import RolloutBatch
@@ -37,7 +37,7 @@ from .initialize import init, is_megatron_main_rank
 from .lora_utils import is_lora_enabled
 from .model import forward_only, initialize_model_and_optimizer, save, train
 from .parallel import verify_megatron_parallel_state
-from .replay_utils import get_register_replay_list_func
+from .replay_utils import _register_replay_list_moe
 from .update_weight.common import named_params_and_buffers
 from .update_weight.update_weight_from_distributed.broadcast import UpdateWeightFromDistributed
 from .update_weight.update_weight_from_distributed.p2p import UpdateWeightP2P
@@ -62,6 +62,8 @@ class MegatronTrainRayActor(TrainRayActor):
         monkey_patch_torch_dist()
 
         super().init(args, role, with_ref)
+
+        routing_replay_manager.register_replay_list_func = _register_replay_list_moe
 
         init(args)
 
@@ -321,7 +323,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     rollout_data=rollout_data,
                     data_key=m.data_key,
                     replay_list=m.replays,
-                    register_replay_list_func=get_register_replay_list_func(m),
+                    register_replay_list_func=m.register_replay_list_func,
                     if_sp_region=m.if_sp_region,
                 )
 

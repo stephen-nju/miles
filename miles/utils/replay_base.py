@@ -58,6 +58,7 @@ class BaseReplayManager:
         self.current: Replay | None = None
         self.enabled = False
         self.stage = "fallthrough"
+        self.register_replay_list_func = None
 
     def create_replay(self) -> Replay:
         replay = Replay()
