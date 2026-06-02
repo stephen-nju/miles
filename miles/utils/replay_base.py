@@ -12,7 +12,8 @@ def _get_rank():
 
 
 class Replay:
-    def __init__(self):
+    def __init__(self, stream_idx: int | None = None):
+        self.stream_idx = stream_idx
         self.forward_index = 0
         self.backward_index = 0
         self.top_indices_list: list[torch.Tensor] = []
@@ -52,6 +53,9 @@ class Replay:
 class BaseReplayManager:
     name: str = ""
     filename: str = ""
+    # True when replayed indices are token/KV positions (indexer): rebase the
+    # per-sample 0-based rollout indices onto the packed training sequence.
+    replay_indices_are_token_positions = False
 
     def __init__(self):
         self.replays: list[Replay] = []
@@ -60,8 +64,8 @@ class BaseReplayManager:
         self.stage = "fallthrough"
         self.register_replay_list_func = None
 
-    def create_replay(self) -> Replay:
-        replay = Replay()
+    def create_replay(self, stream_idx: int | None = None) -> Replay:
+        replay = Replay(stream_idx=stream_idx)
         self.replays.append(replay)
         return replay
 
@@ -94,12 +98,14 @@ class BaseReplayManager:
             if self.enable_check_replay_result:
                 self.check_replay_result(old_topk_fn, scores, topk, top_indices, *args, **kwargs)
 
-            padding_mask = top_indices == -1
-            if padding_mask.any():
-                top_indices[padding_mask] = (
-                    torch.arange(padding_mask.sum(), device=top_indices.device, dtype=top_indices.dtype)
+            # fill padding tokens with arange to avoid invalid reading
+            all_invalid = (top_indices == -1).all(dim=-1)
+            if all_invalid.any():
+                ar = (
+                    torch.arange(top_indices.shape[1], device=top_indices.device, dtype=top_indices.dtype)
                     % scores.shape[1]
                 )
+                top_indices = torch.where(all_invalid.unsqueeze(-1), ar, top_indices)
 
             if return_probs:
                 return scores.gather(1, top_indices), top_indices
@@ -136,10 +142,10 @@ class BaseReplayManager:
 
         return new_topk_fn
 
-    def register_to_module(self, module, attr_name: str):
+    def register_to_module(self, module, attr_name: str, stream_idx: int | None = None):
         if not self.enabled:
             return
-        replay = self.create_replay()
+        replay = self.create_replay(stream_idx=stream_idx)
         setattr(module, attr_name, replay)
         manager = self
 
@@ -201,5 +207,16 @@ class RoutingReplayManager(BaseReplayManager):
     replay_check_threshold = 1e-2
 
 
+class IndexerReplayManager(BaseReplayManager):
+    name = "indexer"
+    filename = "indexer_replay.pt"
+    data_key = "rollout_indexer_topk"
+    if_sp_region = False
+    enable_check_replay_result = False
+    replay_check_threshold = 1e-2
+    replay_indices_are_token_positions = True
+
+
 routing_replay_manager = RoutingReplayManager()
-all_replay_managers = [routing_replay_manager]
+indexer_replay_manager = IndexerReplayManager()
+all_replay_managers = [routing_replay_manager, indexer_replay_manager]

@@ -10,6 +10,23 @@ class RegisterReplayListFunc(Protocol):
     def __call__(self, replay_list: list, replay_data: torch.Tensor, **kwargs) -> None: ...
 
 
+def register_replay_list_sequential(replay_list, replay_data, **_kwargs):
+    """Map replay streams to registered modules.
+
+    Each replay records `replay_data[:, replay.stream_idx]` if `stream_idx` is
+    set (used for sparse layer layouts under PP/VPP, where the global replay
+    tensor contains more streams than this rank registered). Otherwise falls
+    back to 1:1 enumeration order.
+    """
+    for replay_idx, replay in enumerate(replay_list):
+        stream_idx = replay.stream_idx if replay.stream_idx is not None else replay_idx
+        if not 0 <= stream_idx < replay_data.shape[1]:
+            raise AssertionError(
+                f"replay stream_idx {stream_idx} out of range " f"(replay_data has {replay_data.shape[1]} streams)"
+            )
+        replay.record(replay_data[:, stream_idx])
+
+
 def fill_replay_data(
     *,
     args,
@@ -21,6 +38,7 @@ def fill_replay_data(
     replay_list: list,
     register_replay_list_func: RegisterReplayListFunc,
     if_sp_region=True,
+    indices_are_token_positions=False,
 ):
     """Load rollout replay tensors into module replay queues.
 
@@ -90,6 +108,12 @@ def fill_replay_data(
                 replay_data = replay_data.chunk(cp_size, dim=0)[cp_rank]
             else:
                 replay_data = [slice_with_cp(r, pad_func, qkv_format) for r in replay_data]
+                if indices_are_token_positions:
+                    # map indices to thd format
+                    offset = 0
+                    for i, r in enumerate(replay_data):
+                        replay_data[i] = torch.where(r != -1, r + offset, r)
+                        offset += r.shape[0]
                 replay_data = torch.cat(replay_data, dim=0)
                 pad = (pad_size - replay_data.size(0) % pad_size) % pad_size
                 if pad != 0:
