@@ -52,9 +52,7 @@ def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enabl
     # data (see get_common_train_args): live generation is chaotic under the FP
     # noise of recovery, so regenerating on both sides makes the comparison
     # ill-posed. Baseline still generates live; target trains on identical data.
-    replay_rollout_from = (
-        dump_dir.replace("/target/", "/baseline/") if (is_target and mode.has_real_rollout) else None
-    )
+    replay_rollout_from = dump_dir.replace("/target/", "/baseline/") if (is_target and mode.has_real_rollout) else None
     base = get_common_train_args(
         mode,
         dump_dir=dump_dir,
