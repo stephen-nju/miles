@@ -9,6 +9,11 @@ from torch.distributed.distributed_c10d import _object_to_tensor, _tensor_to_obj
 from miles.utils.det_process_group import det_all_reduce
 
 
+def _is_det_world() -> bool:
+    """Whether the training world runs the det_nccl backend (--debug-deterministic-collective)."""
+    return dist.is_initialized() and dist.get_backend() == "det_nccl"
+
+
 @dataclass(frozen=True)
 class GroupInfo:
     rank: int
@@ -156,6 +161,19 @@ class _RawPGUtil(GeneralPGUtil):
         return group.size()
 
     def all_reduce(self, tensor: torch.Tensor, group: dist.ProcessGroup, op: dist.ReduceOp) -> None:
+        if op == dist.ReduceOp.SUM and _is_det_world():
+            # torchft groups cannot host the det_nccl backend; fold at this seam so
+            # every order-sensitive SUM over them shares the deterministic tree.
+            world_size = self.get_size(group)
+            det_all_reduce(
+                tensor,
+                world_size=world_size,
+                gather_fn=lambda output, input: self.all_gather(
+                    list(output.view(world_size, -1).unbind(dim=0)), input, group
+                ),
+            )
+            return
+
         opts = dist.AllreduceOptions()
         opts.reduceOp = op
         _check_wait(group.allreduce([tensor], opts), "allreduce")
@@ -220,24 +238,14 @@ class MultiPGUtil:
         is a pure copy, all ranks receive a bitwise-identical result regardless of
         floating-point non-determinism in the reduce path.
         """
-        if dist.is_initialized() and dist.get_backend() == "det_nccl":
-            # Deterministic mode: fold per level with the shared fixed tree. The
-            # inner-pair x outer-tree composition equals the flat tree over all
-            # ranks, so the multi-group result is bitwise-equal to a single flat
-            # group's fold, and identical on every rank (no broadcast needed).
+        if _is_det_world():
+            # Deterministic mode: every level folds with the shared fixed tree (c10d
+            # levels inside the det_nccl backend, torchft levels in _RawPGUtil), and
+            # inner-pair x outer-tree composes to the flat tree -- bitwise-equal to a
+            # single flat group's fold and identical on every rank (no broadcast).
             assert op == dist.ReduceOp.SUM, f"det multi-group reduce supports SUM only, got {op}"
             for group in groups_inner_to_outer:
-                util = GeneralPGUtil.create(group)
-                world_size = util.get_size(group)
-                if world_size == 1:
-                    continue
-                det_all_reduce(
-                    tensor,
-                    world_size=world_size,
-                    gather_fn=lambda output, input, util=util, group=group, world_size=world_size: util.all_gather(
-                        list(output.view(world_size, -1).unbind(dim=0)), input, group
-                    ),
-                )
+                GeneralPGUtil.create(group).all_reduce(tensor, group, op)
             return
 
         for group in groups_inner_to_outer:

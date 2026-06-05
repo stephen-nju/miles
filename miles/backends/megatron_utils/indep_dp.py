@@ -3,9 +3,7 @@ from collections.abc import Sequence
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
-import torch
 import torch.distributed as dist
-from miles.utils.det_process_group import det_all_reduce
 
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.indep_dp import IndepDPInfo
@@ -95,10 +93,7 @@ def _allreduce_grads_across_replicas(args, model: Sequence["DDP"], parallel_stat
             # mimic: DistributedDataParallel.start_grad_sync
             for bucket_group in model_chunk.bucket_groups + model_chunk.expert_parallel_bucket_groups:
                 for bucket in bucket_group.buckets:
-                    if args.debug_deterministic_collective:
-                        _deterministic_sum_inplace_across_replicas(bucket.grad_data, util, pg)
-                    else:
-                        util.all_reduce(bucket.grad_data, pg, op=dist.ReduceOp.SUM)
+                    util.all_reduce(bucket.grad_data, pg, op=dist.ReduceOp.SUM)
     except Exception:
         allreduce_success = False
         logger.exception("Gradient allreduce across replicas failed")
@@ -110,20 +105,3 @@ def _allreduce_grads_across_replicas(args, model: Sequence["DDP"], parallel_stat
     # Intra-cell consensus: if ANY rank's allreduce failed, ALL ranks discard.
     # get_gloo_group() is cell-local (created from the default world PG).
     return collective_bool_and(value=allreduce_success, group=get_gloo_group())
-
-
-def _deterministic_sum_inplace_across_replicas(
-    tensor: torch.Tensor,
-    util: GeneralPGUtil,
-    pg: dist.ProcessGroup,
-) -> None:
-    """Cross-cell SUM in-place sharing DetProcessGroup's fold; only the gather differs."""
-    world_size = util.get_size(pg)
-    if world_size == 1:
-        return
-
-    det_all_reduce(
-        tensor,
-        world_size=world_size,
-        gather_fn=lambda output, input: util.all_gather(list(output.view(world_size, -1).unbind(dim=0)), input, pg),
-    )
