@@ -318,6 +318,25 @@ def _check_reduce_scatter_vs_allreduce(rank: int, det1: dist.ProcessGroup, x, tr
     _assert_bitwise("reduce_scatter (list) == slice of allreduce", out, expected_shard)
 
 
+def _check_uneven_reduce_scatter(rank: int, det1: dist.ProcessGroup) -> None:
+    """List-form reduce_scatter with uneven slot sizes folds each slot at its true offset."""
+    device = torch.device("cuda", torch.cuda.current_device())
+    slot_sizes = [3, 5, 7, 9]
+    gen = torch.Generator().manual_seed(_SEED + 300 + rank)
+    inputs = [torch.randn(size, generator=gen, dtype=torch.float32).to(device) for size in slot_sizes]
+
+    gathered_inputs: list[list[torch.Tensor]] = []
+    for slot, size in enumerate(slot_sizes):
+        slot_copies = [torch.empty(size, device=device) for _ in range(_WORLD_SIZE)]
+        dist.all_gather(slot_copies, inputs[slot])
+        gathered_inputs.append(slot_copies)
+    expected = _manual_tree_sum(gathered_inputs[rank])
+
+    out = torch.empty(slot_sizes[rank], device=device)
+    dist.reduce_scatter(out, inputs, op=dist.ReduceOp.SUM, group=det1)
+    _assert_bitwise("uneven reduce_scatter (list)", out, expected)
+
+
 def _check_coalescing_manager(rank: int, det1: dist.ProcessGroup, x, tree, x2, tree2) -> None:
     device = torch.device("cuda", torch.cuda.current_device())
 
@@ -481,6 +500,7 @@ def _worker(rank: int, world_size: int, port: int) -> None:
 
     _check_allreduce(rank, det1, det2, x, tree)
     _check_reduce_scatter_vs_allreduce(rank, det1, x, tree)
+    _check_uneven_reduce_scatter(rank, det1)
     _check_coalescing_manager(rank, det1, x, tree, x2, tree2)
     _check_non_contiguous(rank, det1)
     _check_delegation(rank, det1)

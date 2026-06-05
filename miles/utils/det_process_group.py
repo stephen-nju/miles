@@ -98,6 +98,10 @@ class DetProcessGroup(BaseProcessGroup):
         reduce_op = _reduce_op_of(opts)
         if reduce_op == dist.ReduceOp.MAX or reduce_op == dist.ReduceOp.MIN:
             return self._inner._reduce_scatter_base(output, input, opts)
+        assert input.numel() == self.size() * output.numel(), (
+            f"uneven reduce_scatter_tensor: input numel {input.numel()} != "
+            f"{self.size()} x output numel {output.numel()}"
+        )
 
         flat = input.contiguous().view(-1)
         out_flat = output.view(-1) if output.is_contiguous() else torch.empty_like(output).view(-1)
@@ -117,8 +121,29 @@ class DetProcessGroup(BaseProcessGroup):
     def reduce_scatter(
         self, output_tensors: list[torch.Tensor], input_tensors: list[list[torch.Tensor]], opts: object
     ) -> Work:
+        reduce_op = _reduce_op_of(opts)
+        if reduce_op == dist.ReduceOp.MAX or reduce_op == dist.ReduceOp.MIN:
+            return self._inner.reduce_scatter(output_tensors, input_tensors, opts)
+
         for output, inputs in zip(output_tensors, input_tensors, strict=True):
-            self._reduce_scatter_base(output, torch.cat([t.contiguous().view(-1) for t in inputs]), opts)
+            # Slot sizes may be uneven (same per slot across ranks); fold the
+            # concatenated slots and keep this rank's window at its true offset.
+            flat_inputs = [t.contiguous().view(-1) for t in inputs]
+            assert flat_inputs[self.rank()].numel() == output.numel(), (
+                f"slot {self.rank()} numel {flat_inputs[self.rank()].numel()} != output numel {output.numel()}"
+            )
+            out_flat = output.view(-1) if output.is_contiguous() else torch.empty_like(output).view(-1)
+            _det_chunked_fold(
+                torch.cat(flat_inputs),
+                out_flat,
+                out_offset=sum(t.numel() for t in flat_inputs[: self.rank()]),
+                world_size=self.size(),
+                gather_fn=lambda output, input: self._inner._allgather_base(output, input, AllgatherOptions()).wait(),
+            )
+            if not output.is_contiguous():
+                output.copy_(out_flat.view(output.shape))
+            if reduce_op == dist.ReduceOp.AVG:
+                output.div_(self.size())
         return _CompletedWork()
 
     # ------------------------------------------------------------------ #
