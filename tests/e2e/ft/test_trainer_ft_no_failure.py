@@ -43,6 +43,7 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
     compare_dumps(
         baseline_dir=f"{dump_dir}/baseline",
         target_dir=f"{dump_dir}/target",
+        diff_thresholds=[(".*", "rel <= 0.0085")],
         extra_args=["--grouping-skip-keys", "rank", "dp", "edp"],
     )
     print("No-failure comparison test PASSED")

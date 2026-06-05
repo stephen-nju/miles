@@ -20,19 +20,15 @@ from miles.utils.test_utils.comparisons import compare_dumps, compare_metrics
 NUM_PHASE_A_STEPS: int = 1
 NUM_PHASE_B_STEPS: int = 4
 
-# Per-tensor pass predicates. The fault+recovery target rebuilds the cross-cell
-# collective (quorum 0 -> 1 -> 2), so its reduction order differs from the no-fault
-# baseline. The only tensors that fail under that are the starved (near-zero)
-# per-expert grads: across runs every observed failure was
-# grad__...decoder.layers.{2,3,4}.mlp.experts.linear_fc{1,2}.weight*, with max abs
-# diff ~1e-5..3.9e-4 (failing set varies run to run -> FP noise, not a bug); weights
-# are bit-identical. So expert grad tensors additionally tolerate a near-zero abs
-# diff (max_abs <= 1e-3, in the clear gap below real grads >=~1e-2 and <0.2% of
-# grad_norm ~0.8); a trafficked expert with a real diff (max_abs > 1e-3) still fails,
-# and every other tensor stays on the strict relative check (the catch-all). The
-# catch-all is required because a tensor matching no pattern is a fail-closed error.
-# NOTE: confirm the grad regex against a real comparator report when nodes are
-# available (dump names are grad__param__<megatron_param_name>).
+# Per-tensor pass predicates. Only starved near-zero MoE expert grads diverge under
+# the recovery-rebuilt collective's reduction order (observed grad__...mlp.experts.*,
+# max_abs ~1e-5..4e-4, set varies run-to-run -> FP noise; weights bit-identical). So
+# expert grads also tolerate max_abs <= 1e-3 (well below real grads ~1e-2); a real
+# expert diff still fails, and everything else stays strict via the catch-all
+# (required: an unmatched tensor is a fail-closed error). 0.0085 is the comparator's
+# default relative (cosine) threshold.
+# TODO: confirm the grad regex against a real comparator report (dump names:
+# grad__param__<megatron_param_name>).
 _DIFF_THRESHOLDS: list[tuple[str, str]] = [
     (r"grad__.*\.mlp\.experts\..*", "rel <= 0.0085 or max_abs <= 1e-3"),
     (".*", "rel <= 0.0085"),

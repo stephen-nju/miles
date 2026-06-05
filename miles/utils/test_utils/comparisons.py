@@ -12,40 +12,25 @@ logger = logging.getLogger(__name__)
 _REQUIRED_METRIC_KEYS: list[str] = ["train/grad_norm", "train/loss"]
 
 
-_DEFAULT_DUMP_PREDICATE: str = "rel <= 0.0085"
-
-
 def compare_dumps(
     baseline_dir: str,
     target_dir: str,
     *,
-    diff_thresholds: list[tuple[str, str]] | None = None,
+    diff_thresholds: list[tuple[str, str]],
     allow_skipped_pattern: str = "input_ids|positions|cu_seqlens_q|cu_seqlens_kv|qkv_format|.*witness.*",
     allow_failed_pattern: str = "input_ids|positions|cu_seqlens_q|cu_seqlens_kv|qkv_format",
     extra_args: list[str] | None = None,
 ) -> None:
-    """Run the sglang dump comparator and assert no meaningful tensor diverged.
-
-    ``diff_thresholds`` is a list of ``(name_regex, predicate)`` pairs forwarded to
-    the comparator's ``--diff-threshold``: a tensor uses the first fullmatching
-    regex's predicate -- a boolean expression over rel/max_abs/mean_abs, e.g.
-    ``"rel <= 0.0085 or max_abs <= 1e-3"``. Per-tensor on purpose: scope any
-    near-zero tolerance to the specific tensors that need it, so a real bug on any
-    other tensor is not hidden. A tensor matching no pattern is a fail-closed error,
-    so include a catch-all ``.*`` rule. Default ``None`` applies ``rel <= 0.0085``
-    to every tensor (the historical relative threshold).
-    """
     baseline_path = Path(baseline_dir) / "dumps"
     target_path = Path(target_dir) / "dumps"
 
     assert baseline_path.exists(), f"Baseline dump dir does not exist: {baseline_path}"
     assert target_path.exists(), f"Target dump dir does not exist: {target_path}"
 
-    thresholds = diff_thresholds if diff_thresholds is not None else [(".*", _DEFAULT_DUMP_PREDICATE)]
     result = _run_comparator(
         baseline_path=baseline_path,
         target_path=target_path,
-        diff_thresholds=thresholds,
+        diff_thresholds=diff_thresholds,
         allow_skipped_pattern=allow_skipped_pattern,
         allow_failed_pattern=allow_failed_pattern,
         extra_args=extra_args,
@@ -53,7 +38,7 @@ def compare_dumps(
 
     assert result.returncode == 0, (
         f"Dump comparator failed (rc={result.returncode}): {baseline_path} vs {target_path}. "
-        f"The comparator applies the per-tensor predicates ({thresholds}) and the allow/skip "
+        f"The comparator applies the per-tensor predicates ({diff_thresholds}) and the allow/skip "
         f"patterns itself; see comparator_report.jsonl under {target_path} for the offending tensors."
     )
     print(f"Dump comparison passed: {baseline_path} vs {target_path}")
