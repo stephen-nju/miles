@@ -66,6 +66,11 @@ Set `PYTHONPATH` to the repo root (CI sets it automatically). Two ways:
    PYTHONPATH=. python tests/e2e/ft/conftest_ft/scenario_<name>.py run --mode <mode>
    ```
 
+   When debugging a failure, prefer the individual subcommands (with a shared `--dump-dir`,
+   and `--phase` for multi-phase scenarios) over `run`, so you only re-run the part you
+   changed and reuse what already passed — e.g. re-run just `compare` (no GPU) on existing
+   dumps, or re-run a single side / phase.
+
    `scenario_ft_random` is non-comparison: only `run`, with `--seed` / `--num-steps` /
    `--crash-probability`. Each scenario's modes, phases, and knobs are in Mode Variants and
    Test Definitions.
