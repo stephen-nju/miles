@@ -1541,9 +1541,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--debug-deterministic-collective",
                 action="store_true",
                 default=False,
-                help="Debug/test only: replace order-sensitive SUM collectives with a "
-                "fixed-tree fold so different reduction topologies become bitwise-comparable. "
-                "Slow; never enable in production.",
+                help="Debug/test only: run the training world on the det_nccl backend "
+                "(miles.utils.det_process_group), which folds order-sensitive SUM/AVG "
+                "reductions in a fixed tree order so different reduction topologies become "
+                "bitwise-comparable. Slow; never enable in production.",
             )
             return parser
 
