@@ -3,7 +3,9 @@ from collections.abc import Sequence
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
+import torch
 import torch.distributed as dist
+from megatron.core.distributed.deterministic_collectives import _fold_gathered_sum
 
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.indep_dp import IndepDPInfo
@@ -93,7 +95,10 @@ def _allreduce_grads_across_replicas(args, model: Sequence["DDP"], parallel_stat
             # mimic: DistributedDataParallel.start_grad_sync
             for bucket_group in model_chunk.bucket_groups + model_chunk.expert_parallel_bucket_groups:
                 for bucket in bucket_group.buckets:
-                    util.all_reduce(bucket.grad_data, pg, op=dist.ReduceOp.SUM)
+                    if args.debug_deterministic_collective:
+                        _deterministic_sum_inplace_across_replicas(bucket.grad_data, util, pg)
+                    else:
+                        util.all_reduce(bucket.grad_data, pg, op=dist.ReduceOp.SUM)
     except Exception:
         allreduce_success = False
         logger.exception("Gradient allreduce across replicas failed")
@@ -105,3 +110,29 @@ def _allreduce_grads_across_replicas(args, model: Sequence["DDP"], parallel_stat
     # Intra-cell consensus: if ANY rank's allreduce failed, ALL ranks discard.
     # get_gloo_group() is cell-local (created from the default world PG).
     return collective_bool_and(value=allreduce_success, group=get_gloo_group())
+
+
+def _deterministic_sum_inplace_across_replicas(
+    tensor: torch.Tensor,
+    util: GeneralPGUtil,
+    pg: dist.ProcessGroup,
+    *,
+    chunk_numel: int = 64 * 1024 * 1024,
+) -> None:
+    """Cross-cell SUM in-place via all-gather plus the Megatron-side fixed local fold."""
+    assert tensor.is_contiguous(), "deterministic cross-replica sum requires a contiguous tensor"
+
+    world_size = util.get_size(pg)
+    if world_size == 1:
+        return
+
+    flat = tensor.view(-1)
+    total_numel = flat.numel()
+
+    for start in range(0, total_numel, chunk_numel):
+        end = min(start + chunk_numel, total_numel)
+        chunk = flat[start:end].contiguous()
+        gathered_list = [torch.empty_like(chunk) for _ in range(world_size)]
+        util.all_gather(gathered_list, chunk, pg)
+        reduced = _fold_gathered_sum(gathered_list)
+        flat[start:end].copy_(reduced)
