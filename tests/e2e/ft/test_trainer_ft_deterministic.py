@@ -67,7 +67,7 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
     # *bit-for-bit*: a state-copy bug is trivial to introduce and an approximate
     # ("looks close") check would silently miss it. So every assertion is exact --
     # all metrics must be equal (rtol=atol=0) and every dumped tensor must match
-    # bitwise (diff_threshold=0, no near-zero absolute floor).
+    # bitwise (predicate "rel <= 0" for every tensor, no near-zero tolerance).
     #
     # This requires the run to be fully deterministic on both sides.
     # Any divergence is a real bug and must be fixed at the source, never hidden by
@@ -82,7 +82,7 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
     compare_dumps(
         baseline_dir=f"{dump_dir}/baseline/phase_b",
         target_dir=f"{dump_dir}/target/phase_b",
-        diff_threshold=0.0,
+        diff_thresholds=[(".*", "rel <= 0")],
     )
     print("Deterministic healing comparison test PASSED")
 

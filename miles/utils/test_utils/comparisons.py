@@ -12,29 +12,28 @@ logger = logging.getLogger(__name__)
 _REQUIRED_METRIC_KEYS: list[str] = ["train/grad_norm", "train/loss"]
 
 
+_DEFAULT_DUMP_PREDICATE: str = "rel <= 0.0085"
+
+
 def compare_dumps(
     baseline_dir: str,
     target_dir: str,
     *,
-    diff_threshold: float = 0.0085,
-    abs_diff_thresholds: list[tuple[str, float]] | None = None,
+    diff_thresholds: list[tuple[str, str]] | None = None,
     allow_skipped_pattern: str = "input_ids|positions|cu_seqlens_q|cu_seqlens_kv|qkv_format|.*witness.*",
     allow_failed_pattern: str = "input_ids|positions|cu_seqlens_q|cu_seqlens_kv|qkv_format",
     extra_args: list[str] | None = None,
 ) -> None:
     """Run the sglang dump comparator and assert no meaningful tensor diverged.
 
-    The comparator's relative (cosine-like) criterion ``rel_diff <= diff_threshold``
-    is degenerate for near-zero tensors: a tiny absolute difference on a near-zero
-    value yields a huge relative diff.
-
-    ``abs_diff_thresholds`` is a list of ``(name_regex, floor)`` pairs forwarded to
-    the comparator's ``--abs-diff-threshold``: a tensor whose name fullmatches a
-    regex passes if it is within the relative threshold OR its max absolute diff is
-    within that regex's floor (``torch.allclose`` semantics). This is per-tensor on
-    purpose — a single global floor would loosen *every* tensor and could hide a
-    near-zero real bug. Patterns are tried in order, first match wins; unmatched
-    tensors stay strict (floor 0.0). Default ``None`` applies no floor anywhere.
+    ``diff_thresholds`` is a list of ``(name_regex, predicate)`` pairs forwarded to
+    the comparator's ``--diff-threshold``: a tensor uses the first fullmatching
+    regex's predicate -- a boolean expression over rel/max_abs/mean_abs, e.g.
+    ``"rel <= 0.0085 or max_abs <= 1e-3"``. Per-tensor on purpose: scope any
+    near-zero tolerance to the specific tensors that need it, so a real bug on any
+    other tensor is not hidden. A tensor matching no pattern is a fail-closed error,
+    so include a catch-all ``.*`` rule. Default ``None`` applies ``rel <= 0.0085``
+    to every tensor (the historical relative threshold).
     """
     baseline_path = Path(baseline_dir) / "dumps"
     target_path = Path(target_dir) / "dumps"
@@ -42,11 +41,13 @@ def compare_dumps(
     assert baseline_path.exists(), f"Baseline dump dir does not exist: {baseline_path}"
     assert target_path.exists(), f"Target dump dir does not exist: {target_path}"
 
+    thresholds = (
+        diff_thresholds if diff_thresholds is not None else [(".*", _DEFAULT_DUMP_PREDICATE)]
+    )
     result = _run_comparator(
         baseline_path=baseline_path,
         target_path=target_path,
-        diff_threshold=diff_threshold,
-        abs_diff_thresholds=abs_diff_thresholds,
+        diff_thresholds=thresholds,
         allow_skipped_pattern=allow_skipped_pattern,
         allow_failed_pattern=allow_failed_pattern,
         extra_args=extra_args,
@@ -54,9 +55,8 @@ def compare_dumps(
 
     assert result.returncode == 0, (
         f"Dump comparator failed (rc={result.returncode}): {baseline_path} vs {target_path}. "
-        f"The comparator applies the relative threshold ({diff_threshold}), the per-regex absolute "
-        f"floors ({abs_diff_thresholds}), and the allow/skip patterns itself; see comparator_report.jsonl "
-        f"under {target_path} for the offending tensors."
+        f"The comparator applies the per-tensor predicates ({thresholds}) and the allow/skip "
+        f"patterns itself; see comparator_report.jsonl under {target_path} for the offending tensors."
     )
     print(f"Dump comparison passed: {baseline_path} vs {target_path}")
 
@@ -255,8 +255,7 @@ def _run_comparator(
     *,
     baseline_path: Path,
     target_path: Path,
-    diff_threshold: float,
-    abs_diff_thresholds: list[tuple[str, float]] | None,
+    diff_thresholds: list[tuple[str, str]],
     allow_skipped_pattern: str,
     allow_failed_pattern: str,
     extra_args: list[str] | None,
@@ -278,8 +277,6 @@ def _run_comparator(
         # for every tensor and fails with rc=1.
         "--grouping-skip-keys",
         "rank",
-        "--diff-threshold",
-        str(diff_threshold),
         "--allow-skipped-pattern",
         allow_skipped_pattern,
         "--allow-failed-pattern",
@@ -287,12 +284,11 @@ def _run_comparator(
     ]
     if extra_args:
         cmd.extend(extra_args)
-    # Keep --abs-diff-threshold strictly last: its nargs="*" greedily consumes every
+    # Keep --diff-threshold strictly last: its nargs="*" greedily consumes every
     # following token, so no flag with a bare value may come after it.
-    if abs_diff_thresholds:
-        cmd.append("--abs-diff-threshold")
-        for pattern, value in abs_diff_thresholds:
-            cmd.extend([pattern, str(value)])
+    cmd.append("--diff-threshold")
+    for pattern, predicate in diff_thresholds:
+        cmd.extend([pattern, predicate])
 
     result: subprocess.CompletedProcess[str] = subprocess.run(
         cmd,

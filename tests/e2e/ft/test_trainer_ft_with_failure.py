@@ -20,21 +20,23 @@ from miles.utils.test_utils.comparisons import compare_dumps, compare_metrics
 NUM_PHASE_A_STEPS: int = 1
 NUM_PHASE_B_STEPS: int = 4
 
-# Absolute-diff floor scoped to near-zero MoE expert grad tensors ONLY. The
-# fault+recovery target rebuilds the cross-cell collective (quorum 0 -> 1 -> 2), so
-# its reduction order differs from the no-fault baseline. The only tensors that fail
-# under that are the starved (near-zero) per-expert grads: across runs every observed
-# failure was grad__...decoder.layers.{2,3,4}.mlp.experts.linear_fc{1,2}.weight*, with
-# max abs diff ~1e-5..3.9e-4 (failing set varies run to run -> FP noise, not a bug);
-# weights are bit-identical. So the floor is restricted to expert grad tensors by name,
-# and within them only a genuinely near-zero tensor (max_abs_diff <= floor) is excused
-# -- a trafficked expert with a real diff (max_abs > floor) still fails, and every
-# non-expert tensor stays strict. 1e-3 sits in the clear gap below real grads
-# (>=~1e-2) and is <0.2% of grad_norm (~0.8).
-# NOTE: the regex matches the dump grad-tensor name (grad__param__<megatron_name>);
-# confirm it against a real comparator report when nodes are available.
-_NEAR_ZERO_GRAD_ATOL: float = 1e-3
-_NEAR_ZERO_EXPERT_GRAD_PATTERN: str = r"grad__.*\.mlp\.experts\..*"
+# Per-tensor pass predicates. The fault+recovery target rebuilds the cross-cell
+# collective (quorum 0 -> 1 -> 2), so its reduction order differs from the no-fault
+# baseline. The only tensors that fail under that are the starved (near-zero)
+# per-expert grads: across runs every observed failure was
+# grad__...decoder.layers.{2,3,4}.mlp.experts.linear_fc{1,2}.weight*, with max abs
+# diff ~1e-5..3.9e-4 (failing set varies run to run -> FP noise, not a bug); weights
+# are bit-identical. So expert grad tensors additionally tolerate a near-zero abs
+# diff (max_abs <= 1e-3, in the clear gap below real grads >=~1e-2 and <0.2% of
+# grad_norm ~0.8); a trafficked expert with a real diff (max_abs > 1e-3) still fails,
+# and every other tensor stays on the strict relative check (the catch-all). The
+# catch-all is required because a tensor matching no pattern is a fail-closed error.
+# NOTE: confirm the grad regex against a real comparator report when nodes are
+# available (dump names are grad__param__<megatron_param_name>).
+_DIFF_THRESHOLDS: list[tuple[str, str]] = [
+    (r"grad__.*\.mlp\.experts\..*", "rel <= 0.0085 or max_abs <= 1e-3"),
+    (".*", "rel <= 0.0085"),
+]
 
 # rollout_id in phase_b starts from NUM_PHASE_A_STEPS (ckpt resume offset)
 _WITH_FAILURE_ACTIONS: list[dict] = [
@@ -88,7 +90,7 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
     compare_dumps(
         baseline_dir=f"{dump_dir}/baseline/phase_b",
         target_dir=f"{dump_dir}/target/phase_b",
-        abs_diff_thresholds=[(_NEAR_ZERO_EXPERT_GRAD_PATTERN, _NEAR_ZERO_GRAD_ATOL)],
+        diff_thresholds=_DIFF_THRESHOLDS,
     )
     print("With-failure comparison test PASSED")
 
