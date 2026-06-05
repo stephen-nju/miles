@@ -1,99 +1,175 @@
-name: Build and Push Miles Docker Image
+name: Manual Miles Docker Overlay Build
 
 on:
   workflow_dispatch:
     inputs:
-      megatron_repo:
-        description: 'Megatron repository (owner/repo)'
+      base_image:
+        description: 'Base image to overlay source checkouts onto'
         required: true
-        default: 'NVIDIA/Megatron-LM'
-      megatron_commit:
-        description: 'Megatron commit SHA (leave empty for latest)'
-        required: false
-        default: ''
+        default: 'radixark/miles:dev'
+        type: string
       miles_repo:
         description: 'Miles repository (owner/repo)'
         required: true
         default: 'radixark/miles'
-      miles_commit:
-        description: 'Miles commit SHA (leave empty for latest)'
-        required: false
-        default: ''
+        type: string
+      miles_ref:
+        description: 'Miles branch, tag, or commit SHA'
+        required: true
+        default: 'main'
+        type: string
       sglang_repo:
         description: 'SGLang repository (owner/repo)'
         required: true
         default: 'sgl-project/sglang'
-      sglang_commit:
-        description: 'SGLang commit SHA (leave empty for latest)'
+        type: string
+      sglang_ref:
+        description: 'SGLang branch, tag, or commit SHA'
+        required: true
+        default: 'sglang-miles'
+        type: string
+      megatron_repo:
+        description: 'Megatron repository (owner/repo)'
+        required: true
+        default: 'radixark/Megatron-LM'
+        type: string
+      megatron_ref:
+        description: 'Megatron branch, tag, or commit SHA'
+        required: true
+        default: 'miles-main'
+        type: string
+      output_image:
+        description: 'Docker image repository to push'
+        required: true
+        default: 'radixark/miles'
+        type: string
+      output_tag:
+        description: 'Docker tag to push (leave empty to generate one from resolved SHAs)'
         required: false
         default: ''
-      tag:
-        description: 'Optional custom tag (leave empty for auto-generated)'
-        required: false
-        default: ''
+        type: string
+
+permissions:
+  contents: read
 
 jobs:
   build-and-push:
-    runs-on: ubuntu-latest-8-core  # Try 8-core runner (fallback to ubuntu-latest if not available)
+    runs-on: ubuntu-latest
     steps:
-      - name: Clone repositories
+      - name: Checkout Megatron
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.megatron_repo }}
+          ref: ${{ inputs.megatron_ref }}
+          path: megatron
+          submodules: recursive
+          fetch-depth: 0
+          token: ${{ secrets.REPO_ACCESS_TOKEN || github.token }}
+
+      - name: Checkout SGLang
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.sglang_repo }}
+          ref: ${{ inputs.sglang_ref }}
+          path: sglang
+          submodules: recursive
+          fetch-depth: 0
+          token: ${{ secrets.REPO_ACCESS_TOKEN || github.token }}
+
+      - name: Checkout Miles
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.miles_repo }}
+          ref: ${{ inputs.miles_ref }}
+          path: miles
+          submodules: recursive
+          fetch-depth: 0
+          token: ${{ secrets.REPO_ACCESS_TOKEN || github.token }}
+
+      - name: Resolve image metadata
+        id: meta
         env:
-          # Use REPO_ACCESS_TOKEN if available, otherwise fall back to github.token
-          GH_TOKEN: ${{ secrets.REPO_ACCESS_TOKEN || github.token }}
+          INPUT_BASE_IMAGE: ${{ inputs.base_image }}
+          INPUT_OUTPUT_IMAGE: ${{ inputs.output_image }}
+          INPUT_OUTPUT_TAG: ${{ inputs.output_tag }}
+          INPUT_MEGATRON_REPO: ${{ inputs.megatron_repo }}
+          INPUT_SGLANG_REPO: ${{ inputs.sglang_repo }}
+          INPUT_MILES_REPO: ${{ inputs.miles_repo }}
         run: |
-          git clone --recursive https://${{ secrets.REPO_ACCESS_TOKEN || github.token }}@github.com/${{ inputs.megatron_repo }} megatron
-          cd megatron
-          if [ -n "${{ inputs.megatron_commit }}" ]; then
-            git checkout ${{ inputs.megatron_commit }} && git reset --hard ${{ inputs.megatron_commit }}
-          fi
-          cd ..
+          MEGATRON_SHA=$(git -C megatron rev-parse HEAD)
+          SGLANG_SHA=$(git -C sglang rev-parse HEAD)
+          MILES_SHA=$(git -C miles rev-parse HEAD)
 
-          git clone --recursive https://${{ secrets.REPO_ACCESS_TOKEN || github.token }}@github.com/${{ inputs.miles_repo }} miles
-          cd miles
-          if [ -n "${{ inputs.miles_commit }}" ]; then
-            git checkout ${{ inputs.miles_commit }} && git reset --hard ${{ inputs.miles_commit }}
-          fi
-          cd ..
+          MEGATRON_SHORT=$(git -C megatron rev-parse --short=12 HEAD)
+          SGLANG_SHORT=$(git -C sglang rev-parse --short=12 HEAD)
+          MILES_SHORT=$(git -C miles rev-parse --short=12 HEAD)
 
-          git clone --recursive https://${{ secrets.REPO_ACCESS_TOKEN || github.token }}@github.com/${{ inputs.sglang_repo }} sglang
-          cd sglang
-          if [ -n "${{ inputs.sglang_commit }}" ]; then
-            git checkout ${{ inputs.sglang_commit }} && git reset --hard ${{ inputs.sglang_commit }}
+          TAG="$INPUT_OUTPUT_TAG"
+          if [ -z "$TAG" ]; then
+            TAG="megatron-${MEGATRON_SHORT}-sglang-${SGLANG_SHORT}-miles-${MILES_SHORT}"
           fi
-          cd ..
 
-      - name: Generate tag
-        id: tag
+          if ! [[ "$TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "::error::Invalid Docker tag: ${TAG}"
+            exit 1
+          fi
+
+          {
+            echo "tag=${TAG}"
+            echo "megatron_sha=${MEGATRON_SHA}"
+            echo "sglang_sha=${SGLANG_SHA}"
+            echo "miles_sha=${MILES_SHA}"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Docker overlay build"
+            echo ""
+            echo "- Base image: \`${INPUT_BASE_IMAGE}\`"
+            echo "- Output image: \`${INPUT_OUTPUT_IMAGE}:${TAG}\`"
+            echo "- Megatron: \`${INPUT_MEGATRON_REPO}@${MEGATRON_SHA}\`"
+            echo "- SGLang: \`${INPUT_SGLANG_REPO}@${SGLANG_SHA}\`"
+            echo "- Miles: \`${INPUT_MILES_REPO}@${MILES_SHA}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Write overlay Dockerfile
         run: |
-          if [ -n "${{ inputs.tag }}" ]; then
-            echo "tag=${{ inputs.tag }}" >> $GITHUB_OUTPUT
-          else
-            MEGATRON_SHA=$(cd megatron && git rev-parse --short HEAD)
-            MILES_SHA=$(cd miles && git rev-parse --short HEAD)
-            SGLANG_SHA=$(cd sglang && git rev-parse --short HEAD)
-            echo "tag=megatron-${MEGATRON_SHA}-miles-${MILES_SHA}-sglang-${SGLANG_SHA}" >> $GITHUB_OUTPUT
-          fi
+          cat << 'DOCKERFILE' > Dockerfile.overlay
+          ARG BASE_IMAGE
+          FROM ${BASE_IMAGE}
 
-      - name: Write Dockerfile
-        run: |
-          cat << 'EOF' > Dockerfile
-          FROM radixark/miles@sha256:6e467519505da8407f8c33e3c5ec622c0cc4e6e0929102efe34f8415940caf06
-          RUN rm -rf /root/miles /root/Megatron-LM /sgl-workspace/sglang
-          RUN pip uninstall -y miles megatron sglang || true
-          RUN pip install flashinfer-jit-cache==0.6.2 --index-url https://flashinfer.ai/whl/cu129
-          RUN apt remove -y libgtest-dev || true
-          RUN pip install z3-solver cython
-          RUN cd /tmp && rm -rf tilelang && git clone https://github.com/tile-ai/tilelang.git && cd tilelang && pip install -e . -v --no-build-isolation
-          RUN cd /tmp && rm -rf fast-hadamard-transform && git clone https://github.com/Dao-AILab/fast-hadamard-transform.git && cd fast-hadamard-transform && pip install -e . -v --no-build-isolation
-          RUN cd /tmp && rm -rf flash-mla && git clone https://github.com/deepseek-ai/FlashMLA.git flash-mla && cd flash-mla && git submodule update --init --recursive && pip install --no-build-isolation -v .
-          COPY megatron /root/megatron
-          RUN cd /root/megatron && pip install -e .
-          COPY sglang /root/sglang
-          RUN cd /root/sglang/python && pip install -e .
+          ARG BASE_IMAGE
+          ARG MEGATRON_REPO
+          ARG MEGATRON_REF
+          ARG MEGATRON_SHA
+          ARG SGLANG_REPO
+          ARG SGLANG_REF
+          ARG SGLANG_SHA
+          ARG MILES_REPO
+          ARG MILES_REF
+          ARG MILES_SHA
+
+          LABEL org.opencontainers.image.base.name="${BASE_IMAGE}" \
+                org.opencontainers.image.source.megatron="${MEGATRON_REPO}" \
+                org.opencontainers.image.revision.megatron="${MEGATRON_SHA}" \
+                org.opencontainers.image.source.sglang="${SGLANG_REPO}" \
+                org.opencontainers.image.revision.sglang="${SGLANG_SHA}" \
+                org.opencontainers.image.source.miles="${MILES_REPO}" \
+                org.opencontainers.image.revision.miles="${MILES_SHA}"
+
+          WORKDIR /root
+
+          RUN rm -rf /root/miles /root/Megatron-LM /sgl-workspace/sglang && \
+              pip uninstall -y miles megatron megatron-core sglang || true
+
+          COPY megatron /root/Megatron-LM
+          RUN cd /root/Megatron-LM && pip install -e . --no-deps
+
+          COPY sglang /sgl-workspace/sglang
+          RUN cd /sgl-workspace/sglang && pip install -e "python[all]" --no-deps
+
           COPY miles /root/miles
-          RUN cd /tmp && rm -rf transformers && git clone https://github.com/huggingface/transformers.git && cd transformers && git checkout 8cb5963cc22174954e7dca2c0a3320b7dc2f4edc && git apply /root/miles/docker/deepseekv32/transformers.patch && pip install -e .
-          RUN cd /root/miles && pip install -e .
-          EOF
+          RUN cd /root/miles && pip install -e . --no-deps
+          DOCKERFILE
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -101,14 +177,26 @@ jobs:
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PAT }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
           context: .
+          file: Dockerfile.overlay
           push: true
-          tags: ${{ secrets.DOCKER_USERNAME }}/miles:${{ steps.tag.outputs.tag }}
-          cache-from: type=registry,ref=${{ secrets.DOCKER_USERNAME }}/miles:buildcache
-          cache-to: type=registry,ref=${{ secrets.DOCKER_USERNAME }}/miles:buildcache,mode=max
+          tags: ${{ inputs.output_image }}:${{ steps.meta.outputs.tag }}
+          cache-from: type=registry,ref=${{ inputs.output_image }}:manual-buildcache
+          cache-to: type=registry,ref=${{ inputs.output_image }}:manual-buildcache,mode=max
+          build-args: |
+            BASE_IMAGE=${{ inputs.base_image }}
+            MEGATRON_REPO=${{ inputs.megatron_repo }}
+            MEGATRON_REF=${{ inputs.megatron_ref }}
+            MEGATRON_SHA=${{ steps.meta.outputs.megatron_sha }}
+            SGLANG_REPO=${{ inputs.sglang_repo }}
+            SGLANG_REF=${{ inputs.sglang_ref }}
+            SGLANG_SHA=${{ steps.meta.outputs.sglang_sha }}
+            MILES_REPO=${{ inputs.miles_repo }}
+            MILES_REF=${{ inputs.miles_ref }}
+            MILES_SHA=${{ steps.meta.outputs.miles_sha }}
