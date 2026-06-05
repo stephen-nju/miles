@@ -323,6 +323,65 @@ def _check_delegation(rank: int, det1: dist.ProcessGroup) -> None:
     assert dist.get_backend(det1) == "det_nccl", f"unexpected backend name {dist.get_backend(det1)}"
 
 
+def _check_batch_isend_irecv_ring(rank: int, det1: dist.ProcessGroup) -> None:
+    """Ring batch_isend_irecv over det1 exercises the no-op coalescing hooks with batched p2p."""
+    device = torch.device("cuda", torch.cuda.current_device())
+    next_rank = (rank + 1) % _WORLD_SIZE
+    prev_rank = (rank - 1) % _WORLD_SIZE
+
+    send_tensor = torch.full((16,), float(rank), device=device)
+    recv_tensor = torch.empty(16, device=device)
+    ops = [
+        dist.P2POp(dist.isend, send_tensor, peer=next_rank, group=det1),
+        dist.P2POp(dist.irecv, recv_tensor, peer=prev_rank, group=det1),
+    ]
+    reqs = dist.batch_isend_irecv(ops)
+    for req in reqs:
+        req.wait()
+    _assert_bitwise("batch_isend_irecv ring", recv_tensor, torch.full((16,), float(prev_rank), device=device))
+
+
+def _check_dtype_allreduce(rank: int, det1: dist.ProcessGroup) -> None:
+    """bf16 and int64 SUM allreduce over det1 match the manual fold / exact integer sum bitwise."""
+    device = torch.device("cuda", torch.cuda.current_device())
+
+    bf16_inputs = [(_order_sensitive_input(r).to(torch.bfloat16)) for r in range(_WORLD_SIZE)]
+    bf16_expected = _manual_tree_sum(bf16_inputs)
+    bf16_actual = bf16_inputs[rank].clone()
+    dist.all_reduce(bf16_actual, op=dist.ReduceOp.SUM, group=det1)
+    _assert_bitwise("bf16 SUM allreduce == bf16 tree fold", bf16_actual, bf16_expected)
+
+    int_value = torch.full((256,), rank + 1, dtype=torch.int64, device=device)
+    expected_int = torch.full((256,), sum(range(1, _WORLD_SIZE + 1)), dtype=torch.int64, device=device)
+    dist.all_reduce(int_value, op=dist.ReduceOp.SUM, group=det1)
+    _assert_bitwise("int64 SUM allreduce == exact integer sum", int_value, expected_int)
+
+
+def _check_reduce_scatter_avg(rank: int, det1: dist.ProcessGroup, x: torch.Tensor, tree: torch.Tensor) -> None:
+    """AVG reduce_scatter (tensor + list variant) equals this rank's slice of tree/world bitwise."""
+    expected_shard = _shard_of(tree, rank) / _WORLD_SIZE
+
+    rs = torch.empty_like(expected_shard)
+    dist.reduce_scatter_tensor(rs, x.clone(), op=dist.ReduceOp.AVG, group=det1)
+    _assert_bitwise("reduce_scatter_tensor AVG == slice of tree/world", rs, expected_shard)
+
+    inputs = [chunk.contiguous() for chunk in x.clone().chunk(_WORLD_SIZE)]
+    out = torch.empty_like(expected_shard)
+    dist.reduce_scatter(out, inputs, op=dist.ReduceOp.AVG, group=det1)
+    _assert_bitwise("reduce_scatter (list) AVG == slice of tree/world", out, expected_shard)
+
+
+def _check_object_collectives(rank: int, det1: dist.ProcessGroup) -> None:
+    """Object collectives (all_gather_object + broadcast_object_list) delegate correctly over det1."""
+    gathered: list[object] = [None] * _WORLD_SIZE
+    dist.all_gather_object(gathered, {"rank": rank, "tag": rank * 7}, group=det1)
+    assert gathered == [{"rank": r, "tag": r * 7} for r in range(_WORLD_SIZE)], gathered
+
+    payload: list[object] = [{"from": 0, "value": "hello"}] if rank == 0 else [None]
+    dist.broadcast_object_list(payload, src=0, group=det1)
+    assert payload == [{"from": 0, "value": "hello"}], payload
+
+
 def _worker(rank: int, world_size: int, port: int) -> None:
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ["MASTER_PORT"] = str(port)
@@ -343,6 +402,10 @@ def _worker(rank: int, world_size: int, port: int) -> None:
     _check_coalescing_manager(rank, det1, x, tree, x2, tree2)
     _check_non_contiguous(rank, det1)
     _check_delegation(rank, det1)
+    _check_batch_isend_irecv_ring(rank, det1)
+    _check_dtype_allreduce(rank, det1)
+    _check_reduce_scatter_avg(rank, det1, x, tree)
+    _check_object_collectives(rank, det1)
 
     dist.barrier()
     dist.destroy_process_group()
@@ -361,6 +424,35 @@ def test_det_process_group_multi_gpu():
         raise RuntimeError(f"requires {_WORLD_SIZE} GPUs, found {torch.cuda.device_count()}")
 
     mp.spawn(_worker, args=(_WORLD_SIZE, _free_port()), nprocs=_WORLD_SIZE, join=True)
+
+
+def _world_backend_worker(rank: int, world_size: int, port: int) -> None:
+    os.environ["MASTER_ADDR"] = "localhost"
+    os.environ["MASTER_PORT"] = str(port)
+    torch.cuda.set_device(rank)
+    register_det_nccl_backend()
+    dist.init_process_group(backend="det_nccl", rank=rank, world_size=world_size)
+
+    dist.barrier()
+
+    x = _order_sensitive_input(rank)
+    tree = _fixed_tree_reference(x)
+    ar = x.clone()
+    dist.all_reduce(ar, op=dist.ReduceOp.SUM)
+    _assert_bitwise("default-group det_nccl allreduce == tree fold", ar, tree)
+
+    assert dist.get_backend() == "det_nccl", f"unexpected default backend {dist.get_backend()}"
+
+    dist.barrier()
+    dist.destroy_process_group()
+
+
+def test_det_nccl_as_world_backend_multi_gpu():
+    """det_nccl wired as the DEFAULT-group backend (train_actor shape): barrier + bitwise tree SUM."""
+    if torch.cuda.device_count() < _WORLD_SIZE:
+        raise RuntimeError(f"requires {_WORLD_SIZE} GPUs, found {torch.cuda.device_count()}")
+
+    mp.spawn(_world_backend_worker, args=(_WORLD_SIZE, _free_port()), nprocs=_WORLD_SIZE, join=True)
 
 
 if __name__ == "__main__":
