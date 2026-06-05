@@ -87,8 +87,7 @@ def test_fold_gathered_sum(world_size: int, numel: int, dtype: torch.dtype):
     """_fold_gathered_sum matches the reference order bitwise: pairwise tree for power-of-two, ascending otherwise."""
     if dtype.is_floating_point:
         parts = [
-            torch.randn(numel, generator=torch.Generator().manual_seed(_SEED + i)).to(dtype)
-            for i in range(world_size)
+            torch.randn(numel, generator=torch.Generator().manual_seed(_SEED + i)).to(dtype) for i in range(world_size)
         ]
     else:
         parts = [
