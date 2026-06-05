@@ -86,8 +86,15 @@ async def train(args):
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch):
             await rollout_manager.eval.remote(rollout_id)
 
-        if args.debug_exit_after_rollout is not None and (rollout_id - args.start_rollout_id + 1) >= args.debug_exit_after_rollout:
-            logger.info("debug_exit_after_rollout=%d reached at rollout_id=%d, exiting", args.debug_exit_after_rollout, rollout_id)
+        if (
+            args.debug_exit_after_rollout is not None
+            and (rollout_id - args.start_rollout_id + 1) >= args.debug_exit_after_rollout
+        ):
+            logger.info(
+                "debug_exit_after_rollout=%d reached at rollout_id=%d, exiting",
+                args.debug_exit_after_rollout,
+                rollout_id,
+            )
             break
 
     await rollout_manager.dispose.remote()

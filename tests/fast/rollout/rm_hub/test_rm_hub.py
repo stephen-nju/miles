@@ -65,10 +65,7 @@ class TestAsyncRm:
 
     def test_deterministic_random_rm_differs_by_response(self, mock_args):
         mock_args.rm_type = "deterministic_random"
-        samples = [
-            Sample(prompt="", response=f"response_{i}", label="", tokens=[1, 2, 3])
-            for i in range(20)
-        ]
+        samples = [Sample(prompt="", response=f"response_{i}", label="", tokens=[1, 2, 3]) for i in range(20)]
         rewards = [run(async_rm(mock_args, s)) for s in samples]
         assert 0 in rewards and 1 in rewards
 

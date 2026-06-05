@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import torch
 import torch.nn as nn
-from megatron.core import tensor_parallel
 from megatron.core import parallel_state as mpu
+from megatron.core import tensor_parallel
 from megatron.core.transformer.utils import sharded_state_dict_default
 from torch import Tensor
 
@@ -83,9 +83,7 @@ class _DataWitness(nn.Module):
 
         return _abs_broadcast_add(hidden_states, out)
 
-    def sharded_state_dict(
-        self, prefix: str = "", sharded_offsets: tuple = (), metadata: object = None
-    ) -> dict:
+    def sharded_state_dict(self, prefix: str = "", sharded_offsets: tuple = (), metadata: object = None) -> dict:
         pp_rank = mpu.get_pipeline_model_parallel_rank()
         # Embed PP rank in the checkpoint key so each pipeline stage has a unique
         # key (e.g. local_head_witness_pp0.witness.weight vs _pp1.witness.weight).

@@ -47,9 +47,7 @@ class TestInMemoryCheckpointManager:
         with pytest.raises(AssertionError):
             manager.save(state_dict=object(), iteration=2)
 
-    def test_save_after_load_still_raises_load_does_not_reset(
-        self, manager: InMemoryCheckpointManager
-    ):
+    def test_save_after_load_still_raises_load_does_not_reset(self, manager: InMemoryCheckpointManager):
         """`load()` is idempotent and does NOT clear state, so a second `save()`
         on the same manager — even after `load()` — must still raise."""
         manager.save(state_dict=object(), iteration=1)

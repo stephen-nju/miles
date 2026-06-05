@@ -34,7 +34,12 @@ from ...utils.tensor_backper import TensorBackuper
 from ..training_utils.cp_utils import slice_with_cp
 from ..training_utils.data import DataIterator, get_data_iterator, get_rollout_data, sync_actor_critic_data
 from ..training_utils.log_utils import log_cpu_memory, log_perf_data, log_rollout_data
-from ..training_utils.loss import compute_advantages_and_returns, get_log_probs_and_entropy, get_values, _log_train_advantage_computation_event
+from ..training_utils.loss import (
+    _log_train_advantage_computation_event,
+    compute_advantages_and_returns,
+    get_log_probs_and_entropy,
+    get_values,
+)
 from ..training_utils.parallel import get_parallel_state
 from .checkpoint import load_checkpoint
 from .checkpoint_transfer import recv_ckpt

@@ -8,9 +8,9 @@ import torch.nn as nn
 
 from miles.utils.witness.allocator import WitnessInfo
 from miles.utils.witness.module import (
+    _abs_broadcast_add,
     _AbsBroadcastAdd,
     _DataWitness,
-    _abs_broadcast_add,
     _record_and_log_witness_param,
     _zero_witness_rows,
     install_witness,
@@ -487,12 +487,13 @@ class TestAbsBroadcastAddBackwardAddend:
 
         result = _abs_broadcast_add(hidden, addend)
         # Use a loss that produces a known gradient at result
-        upstream_grad = torch.tensor([[[1.0, -2.0, 3.0, -4.0],
-                                       [0.5, -0.5, 0.5, -0.5]],
-                                      [[1.0, 1.0, 1.0, 1.0],
-                                       [-1.0, -1.0, -1.0, -1.0]],
-                                      [[0.0, 0.0, 0.0, 0.0],
-                                       [2.0, -1.0, 0.5, -0.3]]])
+        upstream_grad = torch.tensor(
+            [
+                [[1.0, -2.0, 3.0, -4.0], [0.5, -0.5, 0.5, -0.5]],
+                [[1.0, 1.0, 1.0, 1.0], [-1.0, -1.0, -1.0, -1.0]],
+                [[0.0, 0.0, 0.0, 0.0], [2.0, -1.0, 0.5, -0.3]],
+            ]
+        )
         result.backward(upstream_grad)
 
         # Expected addend grad: abs(upstream_grad).sum(dim=-1, keepdim=True)
@@ -579,10 +580,7 @@ class TestAbsBroadcastAddGradientFlow:
         # (using softmax-loss sum-to-zero property). Row values differ so per-element
         # grads are nonzero — only their sum cancels. This is exactly the scenario
         # where plain broadcast (sum) cancels but abs broadcast (abs.sum) preserves.
-        W = torch.tensor([[2.0, 0.0, 1.0, 1.0],
-                          [0.0, 2.0, 1.0, 1.0],
-                          [1.0, 1.0, 2.0, 0.0],
-                          [1.0, 1.0, 0.0, 2.0]])
+        W = torch.tensor([[2.0, 0.0, 1.0, 1.0], [0.0, 2.0, 1.0, 1.0], [1.0, 1.0, 2.0, 0.0], [1.0, 1.0, 0.0, 2.0]])
         output_layer = torch.nn.Linear(hidden_dim, vocab_size, bias=False)
         output_layer.weight.data = W
 
@@ -602,9 +600,9 @@ class TestAbsBroadcastAddGradientFlow:
         loss.backward()
 
         assert embedding.weight.grad is not None
-        assert (embedding.weight.grad[:2].abs() > 0).all(), (
-            f"Expected nonzero grad for witness rows 0,1, got {embedding.weight.grad[:2]}"
-        )
+        assert (
+            embedding.weight.grad[:2].abs() > 0
+        ).all(), f"Expected nonzero grad for witness rows 0,1, got {embedding.weight.grad[:2]}"
 
 
 class TestAbsBroadcastAddDoubleBackward:

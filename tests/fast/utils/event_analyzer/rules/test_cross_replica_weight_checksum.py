@@ -125,7 +125,6 @@ class TestCheck:
         assert len(mismatches) >= 1
         assert any("step" in m.key for m in mismatches)
 
-
     def test_different_ranks_not_compared(self) -> None:
         """Events from different rank_within_cell should not be compared (PP sharding)."""
         events = [

@@ -173,19 +173,19 @@ class _TensorViewCodec:
                 storage_id_by_ptr[ptr] = len(unique_storages)
                 # Wrap full storage as uint8 tensor (no copy, shares memory).
                 unique_storages.append(torch.tensor(storage, dtype=torch.uint8, device=t.device))
-            view_metas.append({
-                "storage_id": storage_id_by_ptr[ptr],
-                "dtype": t.dtype,
-                "shape": tuple(t.shape),
-                "stride": tuple(t.stride()),
-                "storage_offset": t.storage_offset(),
-            })
+            view_metas.append(
+                {
+                    "storage_id": storage_id_by_ptr[ptr],
+                    "dtype": t.dtype,
+                    "shape": tuple(t.shape),
+                    "stride": tuple(t.stride()),
+                    "storage_offset": t.storage_offset(),
+                }
+            )
         return unique_storages, view_metas
 
     @staticmethod
-    def decode(
-        unique_storages: list[torch.Tensor], view_metas: list[dict]
-    ) -> list[torch.Tensor]:
+    def decode(unique_storages: list[torch.Tensor], view_metas: list[dict]) -> list[torch.Tensor]:
         tensors: list[torch.Tensor] = []
         for vm in view_metas:
             storage_t = unique_storages[vm["storage_id"]]  # uint8 view of received storage

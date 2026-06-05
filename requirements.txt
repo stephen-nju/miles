@@ -5,6 +5,7 @@ httpx[http2]
 hypothesis
 mcp[cli]
 memray  # needed for debugging (but is lightweight), we can put it to dev mode when using pyproject.toml
+nvidia-resiliency-ext; platform_system == "Linux"
 omegaconf
 pillow
 polars
@@ -17,7 +18,6 @@ ray[default]
 ring_flash_attn; platform_system == "Linux"
 sglang-router>=0.2.3
 tensorboard
-nvidia-resiliency-ext; platform_system == "Linux"
 torchft-nightly==2026.4.3; platform_system == "Linux"
 transformers
 wandb

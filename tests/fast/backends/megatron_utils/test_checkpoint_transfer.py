@@ -2,15 +2,11 @@ import pickle
 
 import pytest
 import torch
-from torch.utils._pytree import tree_flatten_with_path, tree_unflatten
-
 from megatron.core.dist_checkpointing.mapping import ShardedTensor
 from megatron.core.dist_checkpointing.tensor_aware_state_dict import MCoreTensorAwareStateDict
+from torch.utils._pytree import tree_flatten_with_path, tree_unflatten
 
-from miles.backends.megatron_utils.checkpoint_transfer import (
-    _TensorViewCodec,
-    _TransportCodec,
-)
+from miles.backends.megatron_utils.checkpoint_transfer import _TensorViewCodec, _TransportCodec
 
 
 @pytest.fixture()
@@ -20,9 +16,7 @@ def state_dict() -> MCoreTensorAwareStateDict:
             "layer1.weight": ShardedTensor.from_rank_offsets(
                 "layer1.weight", torch.arange(32, dtype=torch.float32).reshape(4, 8)
             ),
-            "layer2.weight": ShardedTensor.from_rank_offsets(
-                "layer2.weight", torch.full((2, 6), fill_value=7.0)
-            ),
+            "layer2.weight": ShardedTensor.from_rank_offsets("layer2.weight", torch.full((2, 6), fill_value=7.0)),
         },
         "optimizer": {
             "step": ShardedTensor.from_rank_offsets("step", torch.tensor([100], dtype=torch.int64)),
@@ -33,9 +27,7 @@ def state_dict() -> MCoreTensorAwareStateDict:
 
 
 class TestSerializeForTransport:
-    def test_returns_separated_storages_iteration_and_hollow_shell(
-        self, state_dict: MCoreTensorAwareStateDict
-    ):
+    def test_returns_separated_storages_iteration_and_hollow_shell(self, state_dict: MCoreTensorAwareStateDict):
         original_tensors = [t.clone() for t in state_dict.tensors]
 
         payload = _TransportCodec.encode(state_dict=state_dict, iteration=42)
@@ -53,9 +45,7 @@ class TestSerializeForTransport:
         assert payload["hollow_state_dict"] is state_dict
         assert payload["hollow_state_dict"].is_hollow
 
-    def test_pytree_flatten_yields_each_tensor_as_separate_leaf(
-        self, state_dict: MCoreTensorAwareStateDict
-    ):
+    def test_pytree_flatten_yields_each_tensor_as_separate_leaf(self, state_dict: MCoreTensorAwareStateDict):
         """The whole point of the fix: PGTransport's tree_flatten_with_path must see
         each ShardedTensor.data as its own leaf, not buried inside a pickled blob."""
         payload = _TransportCodec.encode(state_dict=state_dict, iteration=42)
@@ -68,9 +58,7 @@ class TestSerializeForTransport:
         assert any(isinstance(v, MCoreTensorAwareStateDict) for v in non_tensor_leaves)
         assert 42 in non_tensor_leaves
 
-    def test_hollow_shell_pickles_without_dragging_tensor_data(
-        self, state_dict: MCoreTensorAwareStateDict
-    ):
+    def test_hollow_shell_pickles_without_dragging_tensor_data(self, state_dict: MCoreTensorAwareStateDict):
         """PGTransport pickles non-tensor leaves; the hollow shell must survive
         a pickle round-trip and not contain any of the original tensor storage."""
         payload = _TransportCodec.encode(state_dict=state_dict, iteration=42)
@@ -85,9 +73,7 @@ class TestSerializeForTransport:
 
 
 class TestDeserializeFromTransport:
-    def test_round_trip_preserves_tensor_values_iteration_and_common(
-        self, state_dict: MCoreTensorAwareStateDict
-    ):
+    def test_round_trip_preserves_tensor_values_iteration_and_common(self, state_dict: MCoreTensorAwareStateDict):
         original_tensors = [t.clone() for t in state_dict.tensors]
         original_common = dict(state_dict.common)
 
@@ -100,9 +86,7 @@ class TestDeserializeFromTransport:
         for original, back in zip(original_tensors, state_dict_back.tensors, strict=True):
             assert torch.equal(original, back)
 
-    def test_full_pgtransport_simulation_round_trip(
-        self, state_dict: MCoreTensorAwareStateDict
-    ):
+    def test_full_pgtransport_simulation_round_trip(self, state_dict: MCoreTensorAwareStateDict):
         """End-to-end simulation of PGTransport: pytree flatten on sender, pickle
         non-tensor leaves + treespec, clone tensor leaves to mimic NCCL transfer,
         unflatten on receiver. Verifies our (de)serializers survive the actual
@@ -222,10 +206,10 @@ class TestTensorViewCodec:
     def test_partial_dedup_preserves_storage_id_assignment_order(self):
         """First-seen wins: storage_id increments only on a NEW storage_ptr."""
         s1 = torch.arange(10, dtype=torch.float32)  # storage A
-        s2 = torch.arange(20, dtype=torch.int32)    # storage B
-        s1_view = s1[2:8]                            # storage A again
-        s3 = torch.zeros(4, dtype=torch.float64)    # storage C
-        s2_view = s2[5:10]                           # storage B again
+        s2 = torch.arange(20, dtype=torch.int32)  # storage B
+        s1_view = s1[2:8]  # storage A again
+        s3 = torch.zeros(4, dtype=torch.float64)  # storage C
+        s2_view = s2[5:10]  # storage B again
 
         unique_storages, view_metas = _TensorViewCodec.encode([s1, s2, s1_view, s3, s2_view])
 
@@ -233,8 +217,18 @@ class TestTensorViewCodec:
         assert [vm["storage_id"] for vm in view_metas] == [0, 1, 0, 2, 1]
 
     def test_dtype_preserved_across_round_trip(self):
-        dtypes = [torch.float32, torch.float64, torch.float16, torch.int8, torch.int16,
-                  torch.int32, torch.int64, torch.uint8, torch.bool, torch.bfloat16]
+        dtypes = [
+            torch.float32,
+            torch.float64,
+            torch.float16,
+            torch.int8,
+            torch.int16,
+            torch.int32,
+            torch.int64,
+            torch.uint8,
+            torch.bool,
+            torch.bfloat16,
+        ]
         tensors = [torch.zeros(5, dtype=dt) for dt in dtypes]
 
         unique_storages, view_metas = _TensorViewCodec.encode(tensors)
@@ -434,8 +428,8 @@ class TestTensorViewCodec:
         """Production runs on CUDA — verify the codec round-trips on GPU tensors,
         including shared-storage dedup and dtype preservation."""
         base = torch.arange(64, dtype=torch.float32, device="cuda")
-        view_a = base[10:30]                    # shares storage with base
-        view_b = base[30:50].view(4, 5)         # shares storage with base
+        view_a = base[10:30]  # shares storage with base
+        view_b = base[30:50].view(4, 5)  # shares storage with base
         independent = torch.zeros(8, dtype=torch.bfloat16, device="cuda")
 
         unique_storages, view_metas = _TensorViewCodec.encode([base, view_a, view_b, independent])
