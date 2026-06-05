@@ -81,10 +81,7 @@ def _run_fault_injection_loop(
         # is also true for StateAllocatedErrored (cell crashed mid-step but not yet
         # cleaned up), so phase alone is too permissive.
         def _is_alive(cell: dict) -> bool:
-            return any(
-                cond["type"] == "Healthy" and cond["status"] == "True"
-                for cond in cell["status"]["conditions"]
-            )
+            return any(cond["type"] == "Healthy" and cond["status"] == "True" for cond in cell["status"]["conditions"])
 
         alive = [c for c in cells if _is_alive(c)]
         # Skip injection only when killing one more would leave us with no
