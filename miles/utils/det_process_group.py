@@ -148,9 +148,11 @@ class DetProcessGroup(BaseProcessGroup):
         return self._inner.allgather(output_tensors, input_tensors, opts)
 
     def allgather_into_tensor_coalesced(
-        self, output_tensors: list[torch.Tensor], input_tensors: list[torch.Tensor], opts: object
+        self, output_tensors: list[torch.Tensor], input_tensors: list[torch.Tensor], opts: object = None
     ) -> Work:
-        return self._inner.allgather_into_tensor_coalesced(output_tensors, input_tensors, opts)
+        # The coalescing manager's flush calls this without an opts argument.
+        effective_opts = opts if opts is not None else AllgatherOptions()
+        return self._inner.allgather_into_tensor_coalesced(output_tensors, input_tensors, effective_opts)
 
     def _allgather_base(self, output: torch.Tensor, input: torch.Tensor, opts: object) -> Work:
         return self._inner._allgather_base(output, input, opts)
@@ -186,6 +188,15 @@ class DetProcessGroup(BaseProcessGroup):
 
     def recv(self, tensors: list[torch.Tensor], src_rank: int, tag: int) -> Work:
         return self._inner.recv(tensors, src_rank, tag)
+
+    def _start_coalescing(self, device: torch.device) -> None:
+        # The coalescing manager queues ops at the Python level and flushes them
+        # through the *_coalesced methods above; there is no backend-level
+        # coalescing to start for this wrapper.
+        return None
+
+    def _end_coalescing(self, device: torch.device) -> Work:
+        return _CompletedWork()
 
     def getBackendName(self) -> str:
         return "det_nccl"
