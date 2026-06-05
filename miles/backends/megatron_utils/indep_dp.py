@@ -122,6 +122,4 @@ def _deterministic_sum_inplace_across_replicas(
     def _all_gather(gathered_list: list[torch.Tensor], chunk: torch.Tensor) -> None:
         util.all_gather(gathered_list, chunk, pg)
 
-    deterministic_sum_inplace_with_gather(
-        tensor, world_size=util.get_size(pg), all_gather_fn=_all_gather
-    )
+    deterministic_sum_inplace_with_gather(tensor, world_size=util.get_size(pg), all_gather_fn=_all_gather)
