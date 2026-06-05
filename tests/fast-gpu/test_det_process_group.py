@@ -216,7 +216,7 @@ def test_det_process_group_multi_gpu():
     """det_nccl backend: bitwise fixed-order SUM/AVG (allreduce + reduce_scatter, incl. under
     the coalescing manager) and faithful delegation of every other collective, on 4 GPUs."""
     if torch.cuda.device_count() < _WORLD_SIZE:
-        pytest.skip(f"requires {_WORLD_SIZE} GPUs, found {torch.cuda.device_count()}")
+        raise RuntimeError(f"requires {_WORLD_SIZE} GPUs, found {torch.cuda.device_count()}")
 
     mp.spawn(_worker, args=(_WORLD_SIZE, _free_port()), nprocs=_WORLD_SIZE, join=True)
 
