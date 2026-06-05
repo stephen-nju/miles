@@ -36,11 +36,7 @@ def run_pipeline(
     mode: str,
     enable_dumper: bool = True,
 ) -> None:
-    """Full pipeline (prepare + every phase's baseline/target + compare) for one mode.
-
-    A plain callable (not a typer command) so a CI entry file can run a single mode
-    via bare ``python3 <file>``. The typer ``run`` command delegates here too.
-    """
+    """Full pipeline (prepare + every phase's baseline/target + compare) for one mode."""
     effective_phases: list[str] = phases or [""]
     ft_mode: FTTestMode = resolve_mode(mode)
     dump_dir: str = resolve_dump_dir(test_name)
