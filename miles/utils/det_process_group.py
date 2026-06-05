@@ -21,7 +21,6 @@ from torch.distributed import Work
 
 logger = logging.getLogger(__name__)
 
-_DETERMINISTIC_OPS = (dist.ReduceOp.SUM, dist.ReduceOp.AVG)
 
 _BACKEND_NAME = "det_nccl"
 _backend_registered = False
@@ -59,6 +58,15 @@ def _reduce_op_of(opts: object) -> object:
     return opts.reduceOp if hasattr(opts, "reduceOp") else opts
 
 
+def _is_deterministic_op(reduce_op: object) -> bool:
+    """Whether the op is order-sensitive and folded deterministically (SUM/AVG).
+
+    Compared with explicit ``==``: ``ReduceOp.__eq__`` handles the RedOpType enum,
+    but tuple containment (``in``) does not, so ``op in (SUM, AVG)`` is always False.
+    """
+    return reduce_op == dist.ReduceOp.SUM or reduce_op == dist.ReduceOp.AVG
+
+
 class DetProcessGroup(BaseProcessGroup):
     """Wrapper process group whose SUM/AVG reductions use a fixed-order fold."""
 
@@ -72,7 +80,7 @@ class DetProcessGroup(BaseProcessGroup):
 
     def allreduce(self, tensors: list[torch.Tensor], opts: object) -> Work:
         reduce_op = _reduce_op_of(opts)
-        if reduce_op not in _DETERMINISTIC_OPS:
+        if not _is_deterministic_op(reduce_op):
             # MAX/MIN and friends are exactly associative-commutative: order cannot
             # change the bits, so the native implementation is already deterministic.
             return self._inner.allreduce(tensors, opts)
@@ -92,7 +100,7 @@ class DetProcessGroup(BaseProcessGroup):
 
     def _reduce_scatter_base(self, output: torch.Tensor, input: torch.Tensor, opts: object) -> Work:
         reduce_op = _reduce_op_of(opts)
-        if reduce_op not in _DETERMINISTIC_OPS:
+        if not _is_deterministic_op(reduce_op):
             return self._inner._reduce_scatter_base(output, input, opts)
 
         flat = input.contiguous().view(-1)
@@ -108,7 +116,7 @@ class DetProcessGroup(BaseProcessGroup):
         self, output_tensors: list[torch.Tensor], input_tensors: list[list[torch.Tensor]], opts: object
     ) -> Work:
         reduce_op = _reduce_op_of(opts)
-        if reduce_op not in _DETERMINISTIC_OPS:
+        if not _is_deterministic_op(reduce_op):
             return self._inner.reduce_scatter(output_tensors, input_tensors, opts)
 
         for output, inputs in zip(output_tensors, input_tensors, strict=True):
