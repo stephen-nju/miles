@@ -10,7 +10,6 @@ from miles.utils.det_process_group import det_all_reduce
 
 
 def _is_det_world() -> bool:
-    """Whether the training world runs the det_nccl backend (--debug-deterministic-collective)."""
     return dist.is_initialized() and dist.get_backend() == "det_nccl"
 
 
