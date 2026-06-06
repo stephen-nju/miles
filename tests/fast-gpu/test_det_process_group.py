@@ -193,8 +193,8 @@ def test_det_all_reduce_multi_chunk_matches_single_chunk(monkeypatch: pytest.Mon
     assert torch.equal(tensor, expected)
 
 
-def test_det_chunked_fold_shard_window_spans_chunks(monkeypatch: pytest.MonkeyPatch):
-    """A shard output window crossing chunk boundaries equals the same slice of the full fold."""
+def test_det_reduce_scatter_multi_chunk_slice_matches_full_fold(monkeypatch: pytest.MonkeyPatch):
+    """det_reduce_scatter under a tiny chunk cap writes exactly this rank's slice of the full fold."""
     import miles.utils.det_process_group as dpg
 
     gen = torch.Generator().manual_seed(_SEED + 22)
@@ -202,8 +202,11 @@ def test_det_chunked_fold_shard_window_spans_chunks(monkeypatch: pytest.MonkeyPa
     expected_full = _pairwise_tree_fold(per_rank)
 
     monkeypatch.setattr(dpg, "_GATHER_BUFFER_CAP_BYTES", _WORLD_SIZE * 7 * 4)
+    rank = 1
     out = torch.empty(12, dtype=torch.float32)
-    dpg._det_chunked_fold(per_rank[0].clone(), out, out_offset=12, group=_FakeFlatGroup(per_rank))
+    dpg.det_reduce_scatter(
+        out, per_rank[0].clone(), group=_FakeFlatGroup(per_rank), rank=rank, world_size=_WORLD_SIZE
+    )
 
     assert torch.equal(out, expected_full[12:24])
 

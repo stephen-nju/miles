@@ -105,19 +105,15 @@ class DetProcessGroup(BaseProcessGroup):
             return self._inner.reduce_scatter(output_tensors, input_tensors, opts)
 
         for output, inputs in zip(output_tensors, input_tensors, strict=True):
-            # Slot sizes may be uneven (same per slot across ranks); fold the
-            # concatenated slots and keep this rank's window at its true offset.
-            flat_inputs = [t.contiguous().view(-1) for t in inputs]
-            assert (
-                flat_inputs[self.rank()].numel() == output.numel()
-            ), f"slot {self.rank()} numel {flat_inputs[self.rank()].numel()} != output numel {output.numel()}"
-            _det_reduce_scatter_window(
-                output,
-                torch.cat(flat_inputs),
-                group=self._inner,
-                out_offset=sum(t.numel() for t in flat_inputs[: self.rank()]),
-                reduce_op=reduce_op,
+            # Slot j has one size on every rank (sizes may differ between slots);
+            # every rank joins each slot's fold, only rank j keeps the result.
+            assert inputs[self.rank()].numel() == output.numel(), (
+                f"slot {self.rank()} numel {inputs[self.rank()].numel()} != output numel {output.numel()}"
             )
+            for slot, slot_input in enumerate(inputs):
+                _det_reduce_scatter_slot(
+                    output if slot == self.rank() else None, slot_input, group=self._inner, reduce_op=reduce_op
+                )
         return _CompletedWork()
 
     # ------------------------------------------------------------------ #
@@ -203,7 +199,7 @@ def det_all_reduce(tensor: torch.Tensor, *, group: dist.ProcessGroup, reduce_op:
         return
 
     flat = tensor.view(-1)
-    _det_chunked_fold(flat, flat, out_offset=0, group=group)
+    _det_chunked_fold(flat, flat, group=group)
     if reduce_op == dist.ReduceOp.AVG:
         flat.div_(group.size())
 
@@ -220,28 +216,28 @@ def det_reduce_scatter(
     """SUM/AVG-reduce ``input`` across ranks with the fixed fold and write this rank's
     ``1/world_size`` slice into ``output`` (mirrors ``dist.reduce_scatter_tensor``).
     """
-    assert (
-        input.numel() == world_size * output.numel()
-    ), f"uneven reduce_scatter: input numel {input.numel()} != {world_size} x output numel {output.numel()}"
-    _det_reduce_scatter_window(
-        output,
-        input.contiguous().view(-1),
-        group=group,
-        out_offset=rank * output.numel(),
-        reduce_op=reduce_op,
+    assert input.numel() == world_size * output.numel(), (
+        f"uneven reduce_scatter: input numel {input.numel()} != {world_size} x output numel {output.numel()}"
     )
 
+    flat = input.contiguous().view(-1)
+    slot_numel = output.numel()
+    for slot in range(world_size):
+        slot_input = flat[slot * slot_numel : (slot + 1) * slot_numel]
+        _det_reduce_scatter_slot(output if slot == rank else None, slot_input, group=group, reduce_op=reduce_op)
 
-def _det_reduce_scatter_window(
-    output: torch.Tensor,
-    flat_input: torch.Tensor,
-    *,
-    group: dist.ProcessGroup,
-    out_offset: int,
-    reduce_op: object,
+
+def _det_reduce_scatter_slot(
+    output: torch.Tensor | None, slot_input: torch.Tensor, *, group: dist.ProcessGroup, reduce_op: object
 ) -> None:
+    """Fold one slot across ranks into ``output``; ``None`` joins the collective only."""
+    flat_input = slot_input.contiguous().view(-1)
+    if output is None:
+        _det_chunked_fold(flat_input, None, group=group)
+        return
+
     out_flat = output.view(-1) if output.is_contiguous() else torch.empty_like(output).view(-1)
-    _det_chunked_fold(flat_input, out_flat, out_offset=out_offset, group=group)
+    _det_chunked_fold(flat_input, out_flat, group=group)
     if not output.is_contiguous():
         output.copy_(out_flat.view(output.shape))
     if reduce_op == dist.ReduceOp.AVG:
@@ -250,32 +246,27 @@ def _det_reduce_scatter_window(
 
 def _det_chunked_fold(
     flat_input: torch.Tensor,
-    out_flat: torch.Tensor,
+    out_flat: torch.Tensor | None,
     *,
-    out_offset: int,
     group: dist.ProcessGroup,
 ) -> None:
-    """Fold ``flat_input`` across ranks chunk by chunk, writing the summed elements
-    covering ``[out_offset, out_offset + out_flat.numel())`` into ``out_flat``.
+    """Fold ``flat_input`` across ranks chunk by chunk into ``out_flat`` (same numel;
+    may alias ``flat_input``). ``None`` joins the gathers without folding.
 
-    Chunking bounds gather memory and cannot change bits. ``out_flat`` may alias
-    ``flat_input``: writes stay within the already-gathered chunk.
+    Chunking bounds gather memory and cannot change bits.
     """
     world_size = group.size()
     total = flat_input.numel()
     chunk_numel = max(1, min(total, _GATHER_BUFFER_CAP_BYTES // (world_size * flat_input.element_size())))
     gather_buf = torch.empty(world_size * chunk_numel, dtype=flat_input.dtype, device=flat_input.device)
-    out_end = out_offset + out_flat.numel()
 
     for start in range(0, total, chunk_numel):
         count = min(chunk_numel, total - start)
-        lo = max(start, out_offset)
-        hi = min(start + count, out_end)
         buf = gather_buf[: world_size * count]
         _gather_into(group, buf, flat_input[start : start + count])
-        if lo < hi:
+        if out_flat is not None:
             folded = _fold_gathered_sum(list(buf.view(world_size, count).unbind(dim=0)))
-            out_flat[lo - out_offset : hi - out_offset].copy_(folded[lo - start : hi - start])
+            out_flat[start : start + count].copy_(folded)
 
 
 def _gather_into(group: dist.ProcessGroup, output: torch.Tensor, input: torch.Tensor) -> None:
