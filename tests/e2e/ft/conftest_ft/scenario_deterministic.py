@@ -75,20 +75,21 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
     # This requires the run to be fully deterministic on both sides.
     # Any divergence is a real bug and must be fixed at the source, never hidden by
     # loosening these thresholds.
+    grad_norm_key = "train/grad_norm"
     compare_metrics(
         baseline_dir=f"{dump_dir}/baseline/phase_b",
         target_dir=f"{dump_dir}/target/phase_b",
         rtol=0.0,
         atol=0.0,
         key_prefixes=["train/"],
-        exclude_keys=["train/grad_norm"],
+        exclude_keys=[grad_norm_key],
     )
     compare_metrics(
         baseline_dir=f"{dump_dir}/baseline/phase_b",
         target_dir=f"{dump_dir}/target/phase_b",
         rtol=1e-6,
         atol=0.0,
-        key_prefixes=["train/grad_norm"],
+        key_prefixes=[grad_norm_key],
         exclude_keys=[],
     )
     compare_dumps(
