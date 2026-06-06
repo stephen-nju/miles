@@ -62,11 +62,18 @@ def reconfigure_indep_dp_group(
     megatron_rank: int,
     megatron_world_size: int,
 ) -> None:
-    """Shutdown old indep_dp PGs and create new ones with a fresh quorum_id."""
+    """Abort old indep_dp PGs and create new ones with a fresh quorum_id.
+
+    abort, not shutdown: torchft's shutdown() merely drops the reference, leaving
+    ~ProcessGroupNCCL to drain in-flight collectives -- which blocks forever when a
+    peer cell crashed mid-collective (NCCL watchdog then kills the process). abort()
+    hard-closes the comm; torchft's own configure() does the same when reusing a
+    wrapper on a new quorum.
+    """
     old = parallel_state.indep_dp
     for g in [old.group, old.gloo_group]:
         if g is not None:
-            g.shutdown()
+            g.abort(errored=False)
 
     parallel_state.indep_dp = create_indep_dp_group(
         store_addr=store_addr,
