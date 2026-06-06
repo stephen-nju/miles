@@ -168,9 +168,8 @@ class _RawPGUtil(GeneralPGUtil):
                 gather_fn=lambda output, input: self.all_gather(
                     list(output.view(world_size, -1).unbind(dim=0)), input, group
                 ),
+                reduce_op=op,
             )
-            if op == dist.ReduceOp.AVG:
-                tensor.div_(world_size)
             return
 
         opts = dist.AllreduceOptions()

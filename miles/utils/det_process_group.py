@@ -86,9 +86,8 @@ class DetProcessGroup(BaseProcessGroup):
                 tensor,
                 world_size=self.size(),
                 gather_fn=lambda output, input: self._inner._allgather_base(output, input, AllgatherOptions()).wait(),
+                reduce_op=reduce_op,
             )
-            if reduce_op == dist.ReduceOp.AVG:
-                tensor.div_(self.size())
         return _CompletedWork()
 
     def allreduce_coalesced(self, tensors: list[torch.Tensor], opts: object) -> Work:
@@ -216,9 +215,13 @@ class DetProcessGroup(BaseProcessGroup):
 
 
 def det_all_reduce(
-    tensor: torch.Tensor, *, world_size: int, gather_fn: Callable[[torch.Tensor, torch.Tensor], None]
+    tensor: torch.Tensor,
+    *,
+    world_size: int,
+    gather_fn: Callable[[torch.Tensor, torch.Tensor], None],
+    reduce_op: object = dist.ReduceOp.SUM,
 ) -> None:
-    """SUM ``tensor`` across ranks in-place with the fixed fold; the all-gather is injected.
+    """SUM/AVG ``tensor`` across ranks in-place with the fixed fold; the all-gather is injected.
 
     ``gather_fn(output, input)`` follows the ``_allgather_base`` calling convention: fill
     the flat ``output`` (``world_size * input.numel()``) with every rank's ``input``.
@@ -226,12 +229,14 @@ def det_all_reduce(
     """
     if not tensor.is_contiguous():
         work = tensor.contiguous()
-        det_all_reduce(work, world_size=world_size, gather_fn=gather_fn)
+        det_all_reduce(work, world_size=world_size, gather_fn=gather_fn, reduce_op=reduce_op)
         tensor.copy_(work)
         return
 
     flat = tensor.view(-1)
     _det_chunked_fold(flat, flat, out_offset=0, world_size=world_size, gather_fn=gather_fn)
+    if reduce_op == dist.ReduceOp.AVG:
+        flat.div_(world_size)
 
 
 def _det_chunked_fold(
