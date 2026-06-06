@@ -11,7 +11,7 @@ labels=["ft"])`. The CUDA CI runner executes each entry as bare `python3 <file>`
 | Scenario (`conftest_ft/scenario_*.py`) | Type | What it verifies |
 |------|------|-----------------|
 | `scenario_no_failure` | Comparison | indep_dp matches normal DP when no faults |
-| `scenario_with_failure` | Comparison, multi-phase | indep_dp matches normal DP after fault + ckpt resume |
+| `scenario_with_failure` | Comparison, multi-phase | faulted FT run matches fault-free FT run after fault + ckpt resume |
 | `scenario_deterministic` | Comparison, multi-phase | healing state transfer is bitwise-correct (stop+start) |
 | `scenario_ft_random` | Non-comparison | system survives random crashes without hanging |
 
@@ -140,26 +140,27 @@ Roughly equal, not bitwise — allreduce kernel ordering differs across topologi
 
 ### `scenario_with_failure`
 
-Multi-phase comparison test. Verifies indep_dp matches normal DP after fault + checkpoint resume.
+Multi-phase comparison test. Verifies a faulted FT run matches a fault-free FT run
+after fault + checkpoint resume. BOTH sides run FT cells; only the target gets the
+fault injected. Comparing against flat DP instead leaks topology drift (different
+reduction orders) into the comparison — indep_dp-vs-flat equivalence is what
+scenario_no_failure and scenario_deterministic verify; this scenario isolates the
+fault + heal.
 
 ```
 Type: comparison, multi-phase (phase_a + phase_b)
 Phase A steps: 1, Phase B steps: 4, metrics rtol: 5e-2
 
 Phase A (both baseline and target):
-  1. Run 1 step of training
+  1. Run 1 step of FT training
   2. Save checkpoint (--save-interval 1)
 
-Phase B (both sides) resumes from the BASELINE's phase_a checkpoint: phase_a trains
-flat DP vs FT cells whose reduction orders differ slightly, and per-side checkpoints
-would leak that drift into the comparison before any fault is injected. Because the
-baseline checkpoint has no witness params (different distributed-optimizer buffer
-shape), both sides load with --no-load-optim (symmetric fresh Adam state) and
---dist-ckpt-strictness log_all (witness keys keep their zero initialization).
+Phase B (both sides) resumes from the BASELINE's phase_a checkpoint (weights AND
+optimizer state) so any per-run drift in phase_a cannot leak into the comparison.
 
 Phase B — baseline:
   1. Resume from baseline phase_a checkpoint
-  2. Run 4 normal steps
+  2. Run 4 normal FT steps (no fault)
 
 Phase B — target:
   1. Resume from baseline phase_a checkpoint
@@ -171,8 +172,9 @@ Phase B — target:
   6. Rollout 3: _refresh_cells() healing → N cells
   7. Rollout 4: N cells stable
 
-Compare: phase_b dumps (rel <= 0.0085, MoE expert grads also tolerate max_abs <= 1e-3)
-and metrics (rtol=5e-2).
+Compare: phase_b dumps (rel <= 0.0085, MoE expert grads also tolerate max_abs <= 1e-3,
+witness tensors not numerically compared — their contents legitimately differ between
+faulted and fault-free runs) and metrics (rtol=5e-2).
 
 Fault injection via --ci-ft-test-actions JSON (data-driven, executed by RayTrainGroup).
 The JSON `at_rollout` field specifies which rollout_id triggers the action.

@@ -17,13 +17,17 @@ from miles.utils.test_utils.comparisons import (
 NUM_PHASE_A_STEPS: int = 1
 NUM_PHASE_B_STEPS: int = 4
 
-# Per-tensor pass predicates. Only starved near-zero MoE expert grads diverge under
-# the recovery-rebuilt collective's reduction order (observed grad__...mlp.experts.*,
-# max_abs ~1e-5..4e-4, set varies run-to-run -> FP noise; weights bit-identical). So
-# expert grads also tolerate max_abs <= 1e-3 (well below real grads ~1e-2); a real
-# expert diff still fails, and everything else stays strict via the catch-all
-# (required: an unmatched tensor is a fail-closed error).
+# Per-tensor pass predicates. Witness tensors are FT bookkeeping whose contents
+# legitimately differ between the faulted and fault-free runs (different witness-id
+# timelines), so they are not numerically compared — both sides run FT now, so they
+# appear in both dumps instead of being skipped as baseline-missing. Only starved
+# near-zero MoE expert grads diverge under the recovery-rebuilt collective's reduction
+# order (observed grad__...mlp.experts.*, max_abs ~1e-5..4e-4, set varies run-to-run
+# -> FP noise; weights bit-identical). So expert grads also tolerate max_abs <= 1e-3
+# (well below real grads ~1e-2); a real expert diff still fails, and everything else
+# stays strict via the catch-all (required: an unmatched tensor is a fail-closed error).
 _DIFF_THRESHOLDS: list[tuple[str, str]] = [
+    (r".*witness.*", "max_abs >= 0"),
     (r"grad__.*\.mlp\.experts\..*", "rel <= 0.0085 or max_abs <= 1e-3"),
     (".*", "rel <= 0.0085"),
 ]
@@ -46,30 +50,23 @@ def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enabl
     is_phase_a: bool = dump_dir.endswith("phase_a")
     base = get_common_train_args(mode, dump_dir=dump_dir, num_steps=NUM_PHASE_B_STEPS, enable_dumper=enable_dumper)
 
-    if is_target:
-        base += get_ft_args(mode)
+    # BOTH sides run FT cells; only the target gets the fault injected. Comparing
+    # against flat DP instead leaked topology drift into the comparison: the reduction
+    # orders differ, so weights drift apart from the very first step (observed: a
+    # reproducible rel=0.0113 on a small k_layernorm grad at step 0 on pp2, and
+    # real-rollout generation diverging token-wise so step-7 train/grad_norm differed
+    # by ~10%). indep_dp-vs-flat equivalence is what scenario_no_failure and
+    # scenario_deterministic already verify; this scenario isolates the fault + heal.
+    base += get_ft_args(mode)
 
     if is_phase_a:
         base += f"--save {dump_dir}/ckpt --save-interval 1 "
         base += f"--debug-exit-after-rollout {NUM_PHASE_A_STEPS} "
     else:
         # Both sides resume from the BASELINE's phase_a checkpoint so phase_b starts
-        # from identical weights. phase_a trains flat DP on one side and FT cells on
-        # the other, whose reduction orders differ slightly; resuming from per-side
-        # checkpoints leaked that drift into the phase_b comparison (observed: a
-        # run-to-run reproducible rel=0.0113 on a small k_layernorm grad at step 0,
-        # over the 0.85% threshold before any fault was even injected).
-        #
-        # The baseline checkpoint has no witness params and its distributed-optimizer
-        # buffer shape differs from the FT model's, so both sides skip the optimizer
-        # state (symmetric: phase_b starts with fresh Adam state on both sides) and
-        # tolerate the witness keys missing from the checkpoint (log_all): witness
-        # params keep their zero initialization, which is their correct fresh state.
-        # A genuinely missing weight cannot slip through: phase_b dumps every weight
-        # and grad and the comparison would fail immediately.
+        # from identical weights and optimizer state.
         phase_a_dir = dump_dir.replace("/phase_b", "/phase_a").replace("/target/", "/baseline/")
         base += f"--load {phase_a_dir}/ckpt "
-        base += "--no-load-optim --dist-ckpt-strictness log_all "
         if is_target:
             base += f"--ci-ft-test-actions '{json.dumps(_WITH_FAILURE_ACTIONS)}' "
 
