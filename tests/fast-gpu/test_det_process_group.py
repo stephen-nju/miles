@@ -383,10 +383,11 @@ def _check_uneven_reduce_scatter(rank: int, det1: dist.ProcessGroup) -> None:
 
 
 def _expected_slot_fold(rank: int, my_slot_input: torch.Tensor) -> torch.Tensor:
-    """Reference for list reduce_scatter: gather every rank's copy of MY slot and tree-fold."""
+    """Reference for list reduce_scatter: gather every rank's copy of MY slot and tree-fold.
+    Returned flat, matching how callers compare (their outputs are flattened views)."""
     slot_copies = [torch.empty_like(my_slot_input.contiguous()) for _ in range(_WORLD_SIZE)]
     dist.all_gather(slot_copies, my_slot_input.contiguous())
-    return _manual_tree_sum(slot_copies)
+    return _manual_tree_sum(slot_copies).reshape(-1)
 
 
 def _check_uneven_reduce_scatter_shapes(rank: int, det1: dist.ProcessGroup) -> None:
