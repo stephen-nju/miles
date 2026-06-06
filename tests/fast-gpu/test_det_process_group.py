@@ -49,15 +49,15 @@ class _FakeFlatGroup:
         return _CompletedWork()
 
 
-class _FakeTorchftGroup:
-    """CPU stand-in with only the torchft list-form allgather; serves ascending chunk requests."""
+class _FakeTorchftGroup(dist.ProcessGroup):
+    """CPU stand-in mirroring torchft: a ProcessGroup subclass overriding only the list-form allgather
+    (so it inherits a broken ``_allgather_base`` from the C++ base, exactly like the real wrappers);
+    serves ascending chunk requests."""
 
     def __init__(self, per_rank: list[torch.Tensor]) -> None:
+        super().__init__(0, len(per_rank))
         self._per_rank = per_rank
         self._offset = 0
-
-    def size(self) -> int:
-        return len(self._per_rank)
 
     def allgather(
         self, output_lists: list[list[torch.Tensor]], input_list: list[torch.Tensor], opts: object
@@ -222,6 +222,22 @@ def test_det_all_reduce_torchft_list_gather_matches_flat_gather_bitwise():
 
     assert torch.equal(via_flat, via_list)
     assert torch.equal(via_flat, _pairwise_tree_fold(per_rank))
+
+
+def test_gather_into_routes_process_group_instances_to_list_form_allgather():
+    """Regression: ProcessGroup subclasses inherit _allgather_base from the C++ base (hasattr is
+    always True), so routing must key on isinstance and take the overridden list-form allgather."""
+    import miles.utils.det_process_group as dpg
+
+    gen = torch.Generator().manual_seed(_SEED + 23)
+    per_rank = [torch.randn(8, generator=gen, dtype=torch.float32) for _ in range(_WORLD_SIZE)]
+    group = _FakeTorchftGroup(per_rank)
+    assert hasattr(group, "_allgather_base")
+
+    out = torch.empty(_WORLD_SIZE * 8, dtype=torch.float32)
+    dpg._gather_into(group, out, per_rank[0].clone())
+
+    assert torch.equal(out.view(_WORLD_SIZE, 8), torch.stack(per_rank))
 
 
 def test_det_all_reduce_non_contiguous_input_writes_summed_values_back():

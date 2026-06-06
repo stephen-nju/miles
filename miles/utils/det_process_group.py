@@ -186,8 +186,8 @@ class DetProcessGroup(BaseProcessGroup):
 def det_all_reduce(tensor: torch.Tensor, *, group: dist.ProcessGroup, reduce_op: object = dist.ReduceOp.SUM) -> None:
     """SUM/AVG ``tensor`` across ranks in-place with the fixed fold.
 
-    ``group`` may be any process group exposing ``_allgather_base`` or the list-form
-    ``allgather`` (c10d backends and torchft groups alike): the gather is pure data
+    ``group`` may be a raw c10d backend (flat ``_allgather_base``) or any ``ProcessGroup``
+    such as torchft's wrappers (list-form ``allgather``): the gather is pure data
     movement and the local fold defines the (shared) summation order.
     """
     if not tensor.is_contiguous():
@@ -266,12 +266,14 @@ def _det_chunked_fold(
 
 
 def _gather_into(group: dist.ProcessGroup, output: torch.Tensor, input: torch.Tensor) -> None:
-    if hasattr(group, "_allgather_base"):
-        group._allgather_base(output, input, AllgatherOptions()).wait()
-    else:
-        # torchft process groups expose only the list form.
+    if isinstance(group, dist.ProcessGroup):
+        # ProcessGroup wrappers (torchft) inherit ``_allgather_base`` from the C++ base, but it
+        # dispatches to a per-device backend they never register; only the overridden list-form
+        # ``allgather`` is safe. ``hasattr`` cannot discriminate here.
         rows = list(output.view(group.size(), -1).unbind(dim=0))
         group.allgather([rows], [input], AllgatherOptions()).wait()
+    else:
+        group._allgather_base(output, input, AllgatherOptions()).wait()
 
 
 def _reduce_op_of(opts: object) -> object:
