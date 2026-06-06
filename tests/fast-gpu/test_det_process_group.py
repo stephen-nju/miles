@@ -13,6 +13,7 @@ import torch.multiprocessing as mp
 from torch.distributed.distributed_c10d import _coalescing_manager
 
 from miles.utils.det_process_group import (
+    DET_NCCL_BACKEND_NAME,
     _CompletedWork,
     _fold_gathered_sum,
     _reduce_op_of,
@@ -57,6 +58,11 @@ def _pairwise_tree_fold(partials: list[torch.Tensor]) -> torch.Tensor:
     while len(running) > 1:
         running = [running[i] + running[i + 1] for i in range(0, len(running), 2)]
     return running[0]
+
+
+def test_det_nccl_backend_name_constant_value():
+    """DET_NCCL_BACKEND_NAME is the literal "det_nccl" the backend registers and reports under."""
+    assert DET_NCCL_BACKEND_NAME == "det_nccl"
 
 
 def test_reduceop_equality_vs_containment_footgun():
@@ -128,6 +134,33 @@ def test_det_all_reduce_equals_manual_pairwise_tree_fold():
     tensor = per_rank[0].clone()
     det_all_reduce(tensor, world_size=_WORLD_SIZE, gather_fn=_flat_gather_fn(per_rank))
     assert torch.equal(tensor, expected)
+
+
+def test_det_all_reduce_avg_equals_tree_fold_divided_by_world():
+    """det_all_reduce with reduce_op=AVG equals the pairwise-tree fold divided by world_size bitwise."""
+    gen = torch.Generator().manual_seed(_SEED + 31)
+    per_rank = [torch.randn(16, generator=gen, dtype=torch.float32) for _ in range(_WORLD_SIZE)]
+    expected = _pairwise_tree_fold(per_rank) / _WORLD_SIZE
+
+    tensor = per_rank[0].clone()
+    det_all_reduce(tensor, world_size=_WORLD_SIZE, gather_fn=_flat_gather_fn(per_rank), reduce_op=dist.ReduceOp.AVG)
+    assert torch.equal(tensor, expected)
+
+
+def test_det_all_reduce_avg_non_contiguous_recursion_passes_reduce_op_through():
+    """A non-contiguous input with reduce_op=AVG recurses with the op preserved, writing tree/world back."""
+    gen = torch.Generator().manual_seed(_SEED + 32)
+    per_rank = [torch.randn(8 * 4, generator=gen, dtype=torch.float32) for _ in range(_WORLD_SIZE)]
+    expected_flat = _pairwise_tree_fold(per_rank) / _WORLD_SIZE
+
+    base = per_rank[0].reshape(4, 8).clone()
+    non_contiguous = base.t()
+    assert not non_contiguous.is_contiguous()
+
+    det_all_reduce(
+        non_contiguous, world_size=_WORLD_SIZE, gather_fn=_flat_gather_fn(per_rank), reduce_op=dist.ReduceOp.AVG
+    )
+    assert torch.equal(non_contiguous.contiguous().reshape(-1), expected_flat)
 
 
 def _sequential_chunk_gather_fn(per_rank: list[torch.Tensor]) -> Callable[[torch.Tensor, torch.Tensor], None]:
@@ -421,7 +454,7 @@ def _check_delegation(rank: int, det1: dist.ProcessGroup) -> None:
 
     dist.barrier(group=det1)
 
-    assert dist.get_backend(det1) == "det_nccl", f"unexpected backend name {dist.get_backend(det1)}"
+    assert dist.get_backend(det1) == DET_NCCL_BACKEND_NAME, f"unexpected backend name {dist.get_backend(det1)}"
 
 
 def _check_batch_isend_irecv_ring(rank: int, det1: dist.ProcessGroup) -> None:
@@ -472,6 +505,87 @@ def _check_reduce_scatter_avg(rank: int, det1: dist.ProcessGroup, x: torch.Tenso
     _assert_bitwise("reduce_scatter (list) AVG == slice of tree/world", out, expected_shard)
 
 
+def _check_reduce_sum_avg_fold(rank: int, det1: dist.ProcessGroup, x: torch.Tensor, tree: torch.Tensor) -> None:
+    """dist.reduce SUM/AVG over det1 folds in fixed tree order; the dst rank matches tree (/world)."""
+    summed = x.clone()
+    dist.reduce(summed, dst=0, op=dist.ReduceOp.SUM, group=det1)
+    if rank == 0:
+        _assert_bitwise("reduce SUM to dst == tree fold", summed, tree)
+
+    averaged = x.clone()
+    dist.reduce(averaged, dst=0, op=dist.ReduceOp.AVG, group=det1)
+    if rank == 0:
+        _assert_bitwise("reduce AVG to dst == tree/world", averaged, tree / _WORLD_SIZE)
+
+
+def _check_min_delegation(rank: int, det1: dist.ProcessGroup) -> None:
+    """MIN allreduce and MIN reduce over det1 delegate to native NCCL bitwise."""
+    device = torch.device("cuda", torch.cuda.current_device())
+    operand = torch.full((64,), float(rank + 1), device=device)
+
+    min_det = operand.clone()
+    dist.all_reduce(min_det, op=dist.ReduceOp.MIN, group=det1)
+    min_native = operand.clone()
+    dist.all_reduce(min_native, op=dist.ReduceOp.MIN)
+    _assert_bitwise("allreduce MIN delegates to native", min_det, min_native)
+
+    reduce_min = operand.clone()
+    dist.reduce(reduce_min, dst=0, op=dist.ReduceOp.MIN, group=det1)
+    if rank == 0:
+        _assert_bitwise("reduce MIN to dst", reduce_min, torch.ones(64, device=device))
+
+
+def _check_reduce_scatter_uneven_avg(rank: int, det1: dist.ProcessGroup) -> None:
+    """Uneven list-form reduce_scatter with AVG folds each slot at its true offset and divides by world."""
+    device = torch.device("cuda", torch.cuda.current_device())
+    slot_sizes = [3, 5, 7, 9]
+    gen = torch.Generator().manual_seed(_SEED + 400 + rank)
+    inputs = [torch.randn(size, generator=gen, dtype=torch.float32).to(device) for size in slot_sizes]
+
+    slot_copies = [torch.empty(slot_sizes[rank], device=device) for _ in range(_WORLD_SIZE)]
+    dist.all_gather(slot_copies, inputs[rank])
+    expected = _manual_tree_sum(slot_copies) / _WORLD_SIZE
+
+    out = torch.empty(slot_sizes[rank], device=device)
+    dist.reduce_scatter(out, inputs, op=dist.ReduceOp.AVG, group=det1)
+    _assert_bitwise("uneven reduce_scatter (list) AVG == slot tree/world", out, expected)
+
+
+def _check_multi_chunk_through_nccl(rank: int, det1: dist.ProcessGroup, x: torch.Tensor, tree: torch.Tensor) -> None:
+    """A tiny gather-buffer cap forces multi-chunk gathers through real NCCL; SUM allreduce and
+    reduce_scatter_tensor over det1 stay bitwise equal to the single-chunk tree reference."""
+    import miles.utils.det_process_group as dpg
+
+    original_cap = dpg._GATHER_BUFFER_CAP_BYTES
+    try:
+        dpg._GATHER_BUFFER_CAP_BYTES = _WORLD_SIZE * 64 * x.element_size()
+
+        ar = x.clone()
+        dist.all_reduce(ar, op=dist.ReduceOp.SUM, group=det1)
+        _assert_bitwise("multi-chunk allreduce SUM == tree fold", ar, tree)
+
+        expected_shard = _shard_of(tree, rank)
+        rs = torch.empty_like(expected_shard)
+        dist.reduce_scatter_tensor(rs, x.clone(), op=dist.ReduceOp.SUM, group=det1)
+        _assert_bitwise("multi-chunk reduce_scatter_tensor == slice of tree fold", rs, expected_shard)
+    finally:
+        dpg._GATHER_BUFFER_CAP_BYTES = original_cap
+
+
+def _check_reduce_scatter_base_uneven_raises(rank: int, det1: dist.ProcessGroup) -> None:
+    """Calling det1._reduce_scatter_base directly with an indivisible input numel fails loud."""
+    from torch.distributed.distributed_c10d import ReduceScatterOptions
+
+    device = torch.device("cuda", torch.cuda.current_device())
+    opts = ReduceScatterOptions()
+    opts.reduceOp = dist.ReduceOp.SUM
+
+    output = torch.empty(4, device=device)
+    uneven_input = torch.empty(4 * _WORLD_SIZE + 1, device=device)
+    with pytest.raises(AssertionError):
+        det1._reduce_scatter_base(output, uneven_input, opts)
+
+
 def _check_object_collectives(rank: int, det1: dist.ProcessGroup) -> None:
     """Object collectives (all_gather_object + broadcast_object_list) delegate correctly over det1."""
     gathered: list[object] = [None] * _WORLD_SIZE
@@ -507,6 +621,11 @@ def _worker(rank: int, world_size: int, port: int) -> None:
     _check_batch_isend_irecv_ring(rank, det1)
     _check_dtype_allreduce(rank, det1)
     _check_reduce_scatter_avg(rank, det1, x, tree)
+    _check_reduce_sum_avg_fold(rank, det1, x, tree)
+    _check_min_delegation(rank, det1)
+    _check_reduce_scatter_uneven_avg(rank, det1)
+    _check_multi_chunk_through_nccl(rank, det1, x, tree)
+    _check_reduce_scatter_base_uneven_raises(rank, det1)
     _check_object_collectives(rank, det1)
 
     dist.barrier()
@@ -543,7 +662,7 @@ def _world_backend_worker(rank: int, world_size: int, port: int) -> None:
     dist.all_reduce(ar, op=dist.ReduceOp.SUM)
     _assert_bitwise("default-group det_nccl allreduce == tree fold", ar, tree)
 
-    assert dist.get_backend() == "det_nccl", f"unexpected default backend {dist.get_backend()}"
+    assert dist.get_backend() == DET_NCCL_BACKEND_NAME, f"unexpected default backend {dist.get_backend()}"
 
     dist.barrier()
     dist.destroy_process_group()
