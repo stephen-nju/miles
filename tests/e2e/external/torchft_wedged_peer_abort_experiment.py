@@ -17,15 +17,17 @@ peer's GPU state.
 
 Scenarios (fresh actors each; env mirrors the real run:
 CUDA_DEVICE_MAX_CONNECTIONS=1, NCCL_NVLS_ENABLE=1, NCCL_ALGO=Ring):
-    wedged_abort    S aborts the cross PG while W is GPU-wedged and S's cross
-                    allreduce is in-flight. EXPECT (claim): abort blocks; then
-                    killing W unblocks it (the dead-peer law).
-    wedged_errored  Same setup but S calls cross_pg.errored() instead: its
-                    internal synchronize must block on S's own in-flight kernel
-                    (bug A's shape). EXPECT: blocks; unblocked by killing W.
+    matched_abort   Fully faithful shape: W's spinning cell kernel occupies its
+                    single hw connection, W THEN posts the MATCHING cross
+                    allreduce (queued behind, never launches), S's cross kernel
+                    engages mid-collective. S aborts. (bug B candidate)
+    matched_errored Same but S calls errored() (bug A on the matched shape).
+    wedged_abort    No-show shape: W never posts the cross allreduce. Round-1
+                    result: abort returns 0.52s (NOT the hang).
+    wedged_errored  Round-1 result: REPRODUCED bug A -- errored() blocked the
+                    full 120s until the userspace timer aborted S's comm.
     sleep_control   Old (false-negative) shape: W sleep-wedged, GPU idle.
-                    EXPECT: abort returns fast -- proving the GPU wedge is the
-                    differentiator.
+                    Round-1 result: abort 0.52s, as always.
 
 Usage:
     python tests/e2e/external/torchft_wedged_peer_abort_experiment.py
@@ -111,6 +113,20 @@ class _Worker:
 
         t = torch.ones(1 << 20, device=self._device)
         self._cell.allreduce([t]).wait()  # D never joins; raw c10d, huge timeout
+
+    def enqueue_native_inflight(self) -> dict:
+        """Post the cell collective WITHOUT waiting: the spinning kernel occupies
+        this GPU's single hardware connection (CUDA_DEVICE_MAX_CONNECTIONS=1), so
+        anything W enqueues afterwards (its matching cross allreduce) queues
+        behind it and never launches -- the exact real-run shape where W's
+        Megatron cell-internal comm wedges first, then W posts the cross grad
+        allreduce."""
+        import torch
+
+        t = torch.ones(1 << 20, device=self._device)
+        self._native_inflight = self._cell.allreduce([t])
+        self._native_inflight_tensor = t
+        return {"name": self._name, "native_inflight": True}
 
     def enqueue_inflight_cross(self, *, numel: int) -> dict:
         """S posts the cross allreduce W never joins (the in-flight grad allreduce
@@ -212,6 +228,18 @@ def _run(exp: str, *, store_base: str, cell_store_addr: str, timeout_s: float, n
             wedged.wedge_sleep.remote()
             time.sleep(_SETTLE_S)
             print(f"  {_confirm_gpu_wedged(wedged, who='W')} (control expects NOT wedged)")
+        elif exp.startswith("matched_"):
+            # The fully faithful shape: W's spinning cell kernel occupies its single
+            # hardware connection (CUDA_DEVICE_MAX_CONNECTIONS=1), THEN W posts the
+            # MATCHING cross allreduce, which queues behind it and never launches.
+            # S's cross kernel therefore engages mid-collective with a peer whose
+            # kernel will never arrive -- unlike the no-show shape above.
+            native = ray.get(wedged.enqueue_native_inflight.remote(), timeout=30)
+            print(f"  W native in-flight: {native}")
+            w_cross = ray.get(wedged.enqueue_inflight_cross.remote(numel=numel), timeout=30)
+            print(f"  W matched cross posted (queued behind spinning kernel): {w_cross}")
+            time.sleep(_SETTLE_S)
+            print(f"  {_confirm_gpu_wedged(wedged, who='W')}")
         else:
             wedged.wedge_native_collective.remote()
             time.sleep(_SETTLE_S)
@@ -220,8 +248,8 @@ def _run(exp: str, *, store_base: str, cell_store_addr: str, timeout_s: float, n
         inflight = ray.get(surv.enqueue_inflight_cross.remote(numel=numel), timeout=30)
         print(f"  S in-flight cross allreduce (numel={numel}): {inflight}")
 
-        target = surv.errored_cross if exp == "wedged_errored" else surv.abort_cross
-        what = "errored()" if exp == "wedged_errored" else "abort()"
+        target = surv.errored_cross if exp.endswith("errored") else surv.abort_cross
+        what = "errored()" if exp.endswith("errored") else "abort()"
         ref = target.remote()
         try:
             out = ray.get(ref, timeout=_VERDICT_S)
@@ -250,7 +278,7 @@ def main(
     store = TCPStore(host_name="localhost", port=0, is_master=True, wait_for_workers=False)
     store_base = f"localhost:{store.port}/wedged_peer"
 
-    experiments = ["wedged_abort", "wedged_errored", "sleep_control"]
+    experiments = ["matched_abort", "matched_errored", "wedged_abort", "wedged_errored", "sleep_control"]
     if only is not None:
         experiments = [only]
 
