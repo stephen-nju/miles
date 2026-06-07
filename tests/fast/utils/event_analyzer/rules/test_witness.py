@@ -32,11 +32,13 @@ def _make_snapshot(
     cell_index: int = 0,
     rank_within_cell: int = 0,
     stale_ids: list[int] | None = None,
+    attempt: int = 0,
 ) -> WitnessSnapshotParamEvent:
     return WitnessSnapshotParamEvent(
         timestamp=_FIXED_TS,
         source=_make_source(cell_index=cell_index, rank_within_cell=rank_within_cell),
         rollout_id=rollout_id,
+        attempt=attempt,
         instance_id=instance_id,
         nonzero_witness_ids=nonzero_witness_ids,
         stale_ids=stale_ids or [],
@@ -158,6 +160,30 @@ class TestWitnessCheck:
         ]
         assert check(events) == []
 
+    def test_snapshot_latest_attempt_discards_stale_crashed_snapshot(self) -> None:
+        """A crashed attempt-0 snapshot with wrong ids is discarded; only the latest attempt-1 snapshot is compared."""
+        events: list[Event] = [
+            _make_allocate(rollout_id=0, witness_id_to_sample_index={20: 0, 21: 1}, attempt=1),
+            _make_snapshot(rollout_id=0, nonzero_witness_ids=[10, 11], attempt=0),
+            _make_snapshot(rollout_id=0, nonzero_witness_ids=[20, 21], attempt=1),
+            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+        ]
+        assert check(events) == []
+
+    def test_snapshot_latest_attempt_is_the_one_compared(self) -> None:
+        """The latest attempt-1 snapshot has wrong ids (attempt-0 was correct), so exactly one mismatch is reported."""
+        events: list[Event] = [
+            _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0, 11: 1}, attempt=1),
+            _make_snapshot(rollout_id=0, nonzero_witness_ids=[10, 11], attempt=0),
+            _make_snapshot(rollout_id=0, nonzero_witness_ids=[99], attempt=1),
+            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+        ]
+        issues = check(events)
+        assert len(issues) == 1
+        assert isinstance(issues[0], WitnessDataMismatchIssue)
+        assert 99 in issues[0].actual_witness_ids
+        assert 99 not in issues[0].expected_witness_ids
+
     def test_cumulative_across_rollouts(self) -> None:
         """Expected witness IDs are cumulative from rollout 0 to current."""
         events: list[Event] = [
@@ -187,6 +213,18 @@ class TestWitnessCheck:
         events: list[Event] = [
             _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0}),
             _make_step_end(rollout_id=0, cell_outcomes={0: "error"}),
+        ]
+        assert check(events) == []
+
+    def test_multi_element_cell_outcome_not_all_normal_is_skipped(self) -> None:
+        """A cell whose outcome list mixes NORMAL with a non-NORMAL outcome is skipped, even with a missing witness id."""
+        events: list[Event] = [
+            _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0}),
+            _make_snapshot(rollout_id=0, nonzero_witness_ids=[]),
+            _make_step_end(
+                rollout_id=0,
+                cell_outcomes={0: [TrainStepOutcome.NORMAL, TrainStepOutcome.DISCARDED_SHOULD_RETRY]},
+            ),
         ]
         assert check(events) == []
 
@@ -347,3 +385,46 @@ class TestZeroAdvantageExclusion:
         ]
         issues = check(events)
         assert len(issues) == 1
+
+    def test_mixed_token_advantage_is_not_excused(self) -> None:
+        """A sample with mixed per-token advantages [0.0, 2.0] is not all-zero, so its missing witness id is flagged."""
+        events: list[Event] = [
+            _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0, 11: 1}),
+            _make_advantage(rollout_id=0, advantages=[[0.0, 2.0], [3.0, 3.0]], witness_ids=[[10], [11]]),
+            _make_snapshot(rollout_id=0, nonzero_witness_ids=[11]),  # 10 missing but only partially zero-adv
+            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+        ]
+        issues = check(events)
+        assert len(issues) == 1
+        assert 10 in issues[0].expected_witness_ids
+        assert 10 not in issues[0].actual_witness_ids
+
+    def test_zero_advantage_uses_first_token_of_witness_id_list(self) -> None:
+        """A zero-advantage sample with a multi-token witness id list excuses its first id (wid_tokens[0])."""
+        events: list[Event] = [
+            _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0, 11: 1}),
+            _make_advantage(rollout_id=0, advantages=[[0.0, 0.0], [5.0]], witness_ids=[[10, 10], [11]]),
+            _make_snapshot(rollout_id=0, nonzero_witness_ids=[11]),  # 10 missing but zero-adv
+            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+        ]
+        assert check(events) == []
+
+    def test_zero_advantage_id_reused_after_wrap_is_not_excused(self) -> None:
+        """Pins reuse-after-wrap semantics: a witness id that was zero-adv at rollout 0 and is reused for a
+        nonzero-adv sample at rollout 1 (after ring-buffer wrap) is currently still excused by its earlier
+        zero-adv life, so its legitimate reappearance is reported as an extra witness id."""
+        events: list[Event] = [
+            _make_allocate(rollout_id=0, witness_id_to_sample_index={0: 0}),
+            _make_advantage(rollout_id=0, advantages=[[0.0]], witness_ids=[[0]]),
+            _make_snapshot(rollout_id=0, nonzero_witness_ids=[]),
+            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_allocate(rollout_id=1, witness_id_to_sample_index={0: 1}),  # id 0 reused after wrap
+            _make_advantage(rollout_id=1, advantages=[[5.0]], witness_ids=[[0]]),
+            _make_snapshot(rollout_id=1, nonzero_witness_ids=[0]),
+            _make_step_end(rollout_id=1, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+        ]
+        issues = check(events)
+        assert len(issues) == 1
+        assert issues[0].rollout_id == 1
+        assert 0 in issues[0].actual_witness_ids
+        assert 0 not in issues[0].expected_witness_ids
