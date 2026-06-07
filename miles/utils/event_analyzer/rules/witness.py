@@ -52,13 +52,16 @@ def check(events: list[Event]) -> list[WitnessIssue]:
       all values in `WitnessSnapshotParamEvent.stale_ids`
     """
 
+    allocated_witness_ids_by_rollout = _compute_allocated_witness_ids_by_rollout(
+        _filter_by_type(events, WitnessAllocateIdEvent)
+    )
+
     return list(
         _find_mismatches(
             all_step_events=_filter_by_type(events, TrainGroupStepEndEvent),
             all_witness_events=_filter_by_type(events, WitnessSnapshotParamEvent),
-            expected_witness_ids_of_step=_compute_expected_witness_ids_of_step(
-                _filter_by_type(events, WitnessAllocateIdEvent)
-            ),
+            expected_witness_ids_of_step=_compute_expected_witness_ids_of_step(allocated_witness_ids_by_rollout),
+            allocated_witness_ids_by_rollout=allocated_witness_ids_by_rollout,
             zero_adv_witness_ids_by_rollout=_compute_zero_advantage_witness_ids(
                 _filter_by_type(events, TrainAdvantageComputationEvent)
             ),
@@ -81,9 +84,10 @@ def _compute_zero_advantage_witness_ids(
     Keying per (rollout_id, cell_index) would let a cell excuse only its own shard,
     falsely flagging peers' zero-advantage witnesses as missing.
 
-    Snapshot checks must excuse these ids cumulatively (see _zero_adv_ids_up_to): a
-    witness id is trained exactly once, so a zero-advantage sample stays absent from
-    every later snapshot too, while the expected set keeps it forever.
+    Snapshot checks excuse these ids cumulatively (see _zero_adv_excused_ids_at): a
+    zero-advantage sample stays absent from every later snapshot while the expected
+    set keeps it forever — until the ring buffer reallocates the witness id to a new
+    sample, which cancels the excusal.
 
     Only the highest-attempt events per rollout count, mirroring the allocate-event
     handling: a crashed attempt's partial advantage events would otherwise excuse ids
@@ -98,15 +102,20 @@ def _compute_zero_advantage_witness_ids(
     return dict(result)
 
 
-def _compute_expected_witness_ids_of_step(events: list[WitnessAllocateIdEvent]) -> dict[int, set[int]]:
-    allocated_witness_ids_of_rollout_id: dict[int, set[int]] = defaultdict(set)
+def _compute_allocated_witness_ids_by_rollout(events: list[WitnessAllocateIdEvent]) -> dict[int, set[int]]:
+    result: dict[int, set[int]] = defaultdict(set)
     for e in _filter_to_latest_attempt(events, group_key=lambda e: e.rollout_id):
-        allocated_witness_ids_of_rollout_id[e.rollout_id] |= set(e.witness_id_to_sample_index.keys())
+        result[e.rollout_id] |= set(e.witness_id_to_sample_index.keys())
+    return dict(result)
 
+
+def _compute_expected_witness_ids_of_step(
+    allocated_witness_ids_by_rollout: dict[int, set[int]],
+) -> dict[int, set[int]]:
     ans: dict[int, set[int]] = {}
     running: set[int] = set()
-    for rollout_id in sorted(allocated_witness_ids_of_rollout_id.keys()):
-        running = running | allocated_witness_ids_of_rollout_id[rollout_id]
+    for rollout_id in sorted(allocated_witness_ids_by_rollout.keys()):
+        running = running | allocated_witness_ids_by_rollout[rollout_id]
         ans[rollout_id] = set(running)
     return ans
 
@@ -116,6 +125,7 @@ def _find_mismatches(
     all_step_events: list[TrainGroupStepEndEvent],
     all_witness_events: list[WitnessSnapshotParamEvent],
     expected_witness_ids_of_step: dict[int, set[int]],
+    allocated_witness_ids_by_rollout: dict[int, set[int]],
     zero_adv_witness_ids_by_rollout: dict[int, set[int]],
 ) -> Iterator[WitnessIssue]:
     latest_attempt_witness_events = _filter_to_latest_attempt(
@@ -145,7 +155,11 @@ def _find_mismatches(
                 )
                 continue
 
-            zero_adv_ids = _zero_adv_ids_up_to(zero_adv_witness_ids_by_rollout, rollout_id)
+            zero_adv_ids = _zero_adv_excused_ids_at(
+                zero_adv_witness_ids_by_rollout=zero_adv_witness_ids_by_rollout,
+                allocated_witness_ids_by_rollout=allocated_witness_ids_by_rollout,
+                rollout_id=rollout_id,
+            )
 
             for event in witness_events_of_cell:
                 issue = _compare_snapshot(
@@ -159,10 +173,19 @@ def _find_mismatches(
                     yield issue
 
 
-def _zero_adv_ids_up_to(zero_adv_witness_ids_by_rollout: dict[int, set[int]], rollout_id: int) -> set[int]:
-    return {
-        witness_id for rid, ids in zero_adv_witness_ids_by_rollout.items() if rid <= rollout_id for witness_id in ids
-    }
+def _zero_adv_excused_ids_at(
+    *,
+    zero_adv_witness_ids_by_rollout: dict[int, set[int]],
+    allocated_witness_ids_by_rollout: dict[int, set[int]],
+    rollout_id: int,
+) -> set[int]:
+    excused: set[int] = set()
+    for rid in sorted(set(zero_adv_witness_ids_by_rollout) | set(allocated_witness_ids_by_rollout)):
+        if rid > rollout_id:
+            break
+        excused -= allocated_witness_ids_by_rollout.get(rid, set())
+        excused |= zero_adv_witness_ids_by_rollout.get(rid, set())
+    return excused
 
 
 class _HasAttempt(Protocol):

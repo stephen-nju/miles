@@ -410,9 +410,7 @@ class TestZeroAdvantageExclusion:
         assert check(events) == []
 
     def test_zero_advantage_id_reused_after_wrap_is_not_excused(self) -> None:
-        """Pins reuse-after-wrap semantics: a witness id that was zero-adv at rollout 0 and is reused for a
-        nonzero-adv sample at rollout 1 (after ring-buffer wrap) is currently still excused by its earlier
-        zero-adv life, so its legitimate reappearance is reported as an extra witness id."""
+        """Reallocation after ring wrap cancels the zero-adv excusal; the reused nonzero-adv id is required."""
         events: list[Event] = [
             _make_allocate(rollout_id=0, witness_id_to_sample_index={0: 0}),
             _make_advantage(rollout_id=0, advantages=[[0.0]], witness_ids=[[0]]),
@@ -423,8 +421,38 @@ class TestZeroAdvantageExclusion:
             _make_snapshot(rollout_id=1, nonzero_witness_ids=[0]),
             _make_step_end(rollout_id=1, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
         ]
+        assert check(events) == []
+
+    def test_zero_advantage_id_reused_after_wrap_missing_is_flagged(self) -> None:
+        """A reused nonzero-adv id that stays absent from the snapshot is reported missing, not excused."""
+        events: list[Event] = [
+            _make_allocate(rollout_id=0, witness_id_to_sample_index={0: 0}),
+            _make_advantage(rollout_id=0, advantages=[[0.0]], witness_ids=[[0]]),
+            _make_snapshot(rollout_id=0, nonzero_witness_ids=[]),
+            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_allocate(rollout_id=1, witness_id_to_sample_index={0: 1}),  # id 0 reused after wrap
+            _make_advantage(rollout_id=1, advantages=[[5.0]], witness_ids=[[0]]),
+            _make_snapshot(rollout_id=1, nonzero_witness_ids=[]),
+            _make_step_end(rollout_id=1, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+        ]
         issues = check(events)
         assert len(issues) == 1
         assert issues[0].rollout_id == 1
+        assert 0 in issues[0].expected_witness_ids
+        assert 0 not in issues[0].actual_witness_ids
+
+    def test_zero_advantage_id_reused_after_wrap_and_zero_again_stays_excused(self) -> None:
+        """A reused id whose new sample is also zero-adv is excused again at the later rollout."""
+        events: list[Event] = [
+            _make_allocate(rollout_id=0, witness_id_to_sample_index={0: 0}),
+            _make_advantage(rollout_id=0, advantages=[[0.0]], witness_ids=[[0]]),
+            _make_snapshot(rollout_id=0, nonzero_witness_ids=[]),
+            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_allocate(rollout_id=1, witness_id_to_sample_index={0: 1}),  # id 0 reused after wrap
+            _make_advantage(rollout_id=1, advantages=[[0.0]], witness_ids=[[0]]),
+            _make_snapshot(rollout_id=1, nonzero_witness_ids=[]),
+            _make_step_end(rollout_id=1, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+        ]
+        assert check(events) == []
         assert 0 in issues[0].actual_witness_ids
         assert 0 not in issues[0].expected_witness_ids
