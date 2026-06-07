@@ -4,7 +4,8 @@ import os
 import re
 import sys
 import warnings
-from typing import Callable, TextIO
+from collections.abc import Callable
+from typing import TextIO
 
 _LOGGER_CONFIGURED = False
 
