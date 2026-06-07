@@ -1,6 +1,7 @@
 import logging
 from collections import defaultdict
-from collections.abc import Iterator
+from collections.abc import Callable, Hashable, Iterator, Sequence
+from typing import Protocol, TypeVar
 
 from miles.backends.megatron_utils.types import TrainStepOutcome
 from miles.utils.event_logger.models import (
@@ -88,16 +89,8 @@ def _compute_zero_advantage_witness_ids(
     handling: a crashed attempt's partial advantage events would otherwise excuse ids
     that the successful retry trains for real.
     """
-    max_attempt_by_rollout: dict[int, int] = {}
-    for event in events:
-        prev = max_attempt_by_rollout.get(event.rollout_id)
-        if prev is None or event.attempt > prev:
-            max_attempt_by_rollout[event.rollout_id] = event.attempt
-
     result: dict[int, set[int]] = defaultdict(set)
-    for event in events:
-        if event.attempt != max_attempt_by_rollout[event.rollout_id]:
-            continue
+    for event in _filter_to_latest_attempt(events, group_key=lambda e: e.rollout_id):
         for adv_tokens, wid_tokens in zip(event.advantages, event.witness_ids, strict=True):
             if all(v == 0.0 for v in adv_tokens):
                 result[event.rollout_id].add(wid_tokens[0])
@@ -106,19 +99,14 @@ def _compute_zero_advantage_witness_ids(
 
 
 def _compute_expected_witness_ids_of_step(events: list[WitnessAllocateIdEvent]) -> dict[int, set[int]]:
-    latest_by_rollout: dict[int, WitnessAllocateIdEvent] = {}
-    for e in events:
-        if e.rollout_id not in latest_by_rollout or e.attempt > latest_by_rollout[e.rollout_id].attempt:
-            latest_by_rollout[e.rollout_id] = e
-
-    allocated_witness_ids_of_rollout_id = {
-        rid: list(e.witness_id_to_sample_index.keys()) for rid, e in latest_by_rollout.items()
-    }
+    allocated_witness_ids_of_rollout_id: dict[int, set[int]] = defaultdict(set)
+    for e in _filter_to_latest_attempt(events, group_key=lambda e: e.rollout_id):
+        allocated_witness_ids_of_rollout_id[e.rollout_id] |= set(e.witness_id_to_sample_index.keys())
 
     ans: dict[int, set[int]] = {}
     running: set[int] = set()
     for rollout_id in sorted(allocated_witness_ids_of_rollout_id.keys()):
-        running = running | set(allocated_witness_ids_of_rollout_id[rollout_id])
+        running = running | allocated_witness_ids_of_rollout_id[rollout_id]
         ans[rollout_id] = set(running)
     return ans
 
@@ -130,6 +118,10 @@ def _find_mismatches(
     expected_witness_ids_of_step: dict[int, set[int]],
     zero_adv_witness_ids_by_rollout: dict[int, set[int]],
 ) -> Iterator[WitnessIssue]:
+    latest_witness_events = _filter_to_latest_attempt(
+        all_witness_events, group_key=lambda e: (e.rollout_id, e.source.cell_index)
+    )
+
     for step_event in all_step_events:
         rollout_id = step_event.rollout_id
 
@@ -139,14 +131,9 @@ def _find_mismatches(
             if not all(r == TrainStepOutcome.NORMAL for r in cell_outcome):
                 continue
 
-            matching_events = [
-                e for e in all_witness_events if e.rollout_id == rollout_id and e.source.cell_index == cell_index
+            witness_events_of_cell = [
+                e for e in latest_witness_events if e.rollout_id == rollout_id and e.source.cell_index == cell_index
             ]
-            if matching_events:
-                latest_attempt = max(e.attempt for e in matching_events)
-                witness_events_of_cell = [e for e in matching_events if e.attempt == latest_attempt]
-            else:
-                witness_events_of_cell = []
 
             if not witness_events_of_cell:
                 yield WitnessMissingSnapshotIssue(
@@ -176,6 +163,29 @@ def _zero_adv_ids_up_to(zero_adv_witness_ids_by_rollout: dict[int, set[int]], ro
         if rid <= rollout_id:
             result |= ids
     return result
+
+
+class _HasAttempt(Protocol):
+    attempt: int
+
+
+_EventWithAttemptT = TypeVar("_EventWithAttemptT", bound=_HasAttempt)
+
+
+def _filter_to_latest_attempt(
+    events: Sequence[_EventWithAttemptT],
+    *,
+    group_key: Callable[[_EventWithAttemptT], Hashable],
+) -> list[_EventWithAttemptT]:
+    """Keep only events whose attempt equals the max attempt within their group."""
+    max_attempt_by_group: dict[Hashable, int] = {}
+    for event in events:
+        key = group_key(event)
+        prev = max_attempt_by_group.get(key)
+        if prev is None or event.attempt > prev:
+            max_attempt_by_group[key] = event.attempt
+
+    return [e for e in events if e.attempt == max_attempt_by_group[group_key(e)]]
 
 
 def _compare_snapshot(
