@@ -69,7 +69,10 @@ def check(events: list[Event]) -> list[WitnessIssue]:
     )
 
 
-def _filter_by_type(arr: list, ty: type) -> list:
+_EventT = TypeVar("_EventT")
+
+
+def _filter_by_type(arr: Sequence[Event], ty: type[_EventT]) -> list[_EventT]:
     return [x for x in arr if isinstance(x, ty)]
 
 
@@ -155,7 +158,7 @@ def _find_mismatches(
                 )
                 continue
 
-            zero_adv_ids = _zero_adv_excused_ids_at(
+            zero_adv_excused_ids = _zero_adv_excused_ids_at(
                 zero_adv_witness_ids_by_rollout=zero_adv_witness_ids_by_rollout,
                 allocated_witness_ids_by_rollout=allocated_witness_ids_by_rollout,
                 rollout_id=rollout_id,
@@ -167,7 +170,7 @@ def _find_mismatches(
                     expected=expected_witness_ids_of_step.get(rollout_id, set()),
                     rollout_id=rollout_id,
                     cell_index=cell_index,
-                    zero_adv_witness_ids=zero_adv_ids,
+                    zero_adv_excused_ids=zero_adv_excused_ids,
                 )
                 if issue is not None:
                     yield issue
@@ -216,10 +219,10 @@ def _compare_snapshot(
     expected: set[int],
     rollout_id: int,
     cell_index: int,
-    zero_adv_witness_ids: set[int],
+    zero_adv_excused_ids: set[int],
 ) -> WitnessDataMismatchIssue | None:
     stale_set = set(event.stale_ids)
-    filtered_expected = expected - stale_set - zero_adv_witness_ids
+    filtered_expected = expected - stale_set - zero_adv_excused_ids
     filtered_actual = set(event.nonzero_witness_ids) - stale_set
 
     if filtered_expected == filtered_actual:
