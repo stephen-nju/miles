@@ -247,6 +247,18 @@ class _MatrixWorker:
         """Liveness probe; runs on a second actor thread while another call blocks."""
         return f"{self._name} alive at {time.monotonic():.1f}"
 
+    def cuda_probe(self) -> dict:
+        """GPU-side probe on a second actor thread: time torch.cuda.synchronize().
+
+        Separates host-blocked from GPU-blocked: if the device/stream is occupied
+        by a never-completing kernel, this blocks too; if only a host thread is
+        stuck (lock/GIL/socket), this returns immediately."""
+        import torch
+
+        start = time.monotonic()
+        torch.cuda.synchronize()
+        return {"name": self._name, "synchronize_s": round(time.monotonic() - start, 3)}
+
     def abort_cross(self, *, target: str) -> dict:
         """Abort this rank's cross-cell PG(s) like reconfigure_indep_dp_group does; time it."""
         groups = {
@@ -341,9 +353,15 @@ def _run_experiment(exp: str, *, store_base: str, store_hostport: str, timeout_s
             time.sleep(_SETTLE_S)
 
             ref = workers["b1"].blocked_item_min1.remote()
+            time.sleep(5)  # while .item() is parked, probe the GPU from the second thread
+            probe_ref = workers["b1"].cuda_probe.remote()
             try:
                 out = ray.get(ref, timeout=timeout_s + _HANG_VERDICT_TIMEOUT_S)
-                return f"item returned: {out} (expect: unblocked ~{timeout_s}s by timer abort, or HANG like r19)"
+                probe = ray.get(probe_ref, timeout=_HANG_VERDICT_TIMEOUT_S)
+                return (
+                    f"item returned: {out}; gpu probe during block: {probe} "
+                    f"(expect: both unblocked ~{timeout_s}s by timer abort, or HANG like r19)"
+                )
             except ray.exceptions.GetTimeoutError:
                 probe = ray.get(workers["b1"].ping.remote(), timeout=10)
                 print(f"  blocked_item STUCK; probe: {probe}; killing wedged a1")
