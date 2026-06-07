@@ -69,9 +69,13 @@ class _Worker:
         self._graveyard: list[object] = []
 
         self._nccl = ProcessGroupNCCL(timeout=timedelta(seconds=timeout_s))
-        self._nccl.configure(store_addr=f"{store_addr}/nccl", replica_id=name, rank=rank, world_size=2, quorum_id=quorum_id)
+        self._nccl.configure(
+            store_addr=f"{store_addr}/nccl", replica_id=name, rank=rank, world_size=2, quorum_id=quorum_id
+        )
         self._gloo = ProcessGroupGloo(timeout=timedelta(seconds=timeout_s))
-        self._gloo.configure(store_addr=f"{store_addr}/gloo", replica_id=name, rank=rank, world_size=2, quorum_id=quorum_id)
+        self._gloo.configure(
+            store_addr=f"{store_addr}/gloo", replica_id=name, rank=rank, world_size=2, quorum_id=quorum_id
+        )
 
         opts = dist.AllreduceOptions()
         opts.reduceOp = dist.ReduceOp.SUM
@@ -149,9 +153,13 @@ class _Worker:
 
         start = time.monotonic()
         self._nccl_q2 = ProcessGroupNCCL(timeout=timedelta(seconds=timeout_s))
-        self._nccl_q2.configure(store_addr=f"{store_addr}/nccl", replica_id=self._name, rank=rank, world_size=2, quorum_id=2)
+        self._nccl_q2.configure(
+            store_addr=f"{store_addr}/nccl", replica_id=self._name, rank=rank, world_size=2, quorum_id=2
+        )
         self._gloo_q2 = ProcessGroupGloo(timeout=timedelta(seconds=timeout_s))
-        self._gloo_q2.configure(store_addr=f"{store_addr}/gloo", replica_id=self._name, rank=rank, world_size=2, quorum_id=2)
+        self._gloo_q2.configure(
+            store_addr=f"{store_addr}/gloo", replica_id=self._name, rank=rank, world_size=2, quorum_id=2
+        )
         return {"name": self._name, "build_q2_s": round(time.monotonic() - start, 3)}
 
     def collective_on_q2(self) -> dict:
