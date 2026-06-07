@@ -454,5 +454,3 @@ class TestZeroAdvantageExclusion:
             _make_step_end(rollout_id=1, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
         ]
         assert check(events) == []
-        assert 0 in issues[0].actual_witness_ids
-        assert 0 not in issues[0].expected_witness_ids
