@@ -10,13 +10,23 @@ from tests.e2e.ft.conftest_ft.modes import FTTestMode
 from miles.utils.test_utils.comparisons import (
     INPUT_TENSORS_ALLOW_FAILED_PATTERN,
     INPUT_TENSORS_SKIP_PATTERN,
-    TOLERANCE_DIFF_THRESHOLDS,
     compare_dumps,
     compare_metrics,
 )
 
 NUM_PHASE_A_STEPS: int = 1
 NUM_PHASE_B_STEPS: int = 4
+
+# Per-tensor pass predicates. Only starved near-zero MoE expert grads diverge under
+# the recovery-rebuilt collective's reduction order (observed grad__...mlp.experts.*,
+# max_abs ~1e-5..4e-4, set varies run-to-run -> FP noise; weights bit-identical). So
+# expert grads also tolerate max_abs <= 1e-3 (well below real grads ~1e-2); a real
+# expert diff still fails, and everything else stays strict via the catch-all
+# (required: an unmatched tensor is a fail-closed error).
+_DIFF_THRESHOLDS: list[tuple[str, str]] = [
+    (r"grad__.*\.mlp\.experts\..*", "rel <= 0.0085 or max_abs <= 1e-3"),
+    (".*", "rel <= 0.0085"),
+]
 
 # rollout_id in phase_b starts from NUM_PHASE_A_STEPS (ckpt resume offset)
 _WITH_FAILURE_ACTIONS: list[dict] = [
@@ -71,7 +81,7 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
     compare_dumps(
         baseline_dir=f"{dump_dir}/baseline/phase_b",
         target_dir=f"{dump_dir}/target/phase_b",
-        diff_thresholds=TOLERANCE_DIFF_THRESHOLDS,
+        diff_thresholds=_DIFF_THRESHOLDS,
         allow_skipped_pattern=INPUT_TENSORS_SKIP_PATTERN,
         allow_failed_pattern=INPUT_TENSORS_ALLOW_FAILED_PATTERN,
     )
