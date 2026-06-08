@@ -92,6 +92,19 @@ class MegatronTrainRayActor(TrainRayActor):
                 via PGTransport instead of loading from disk.
             indep_dp_info: Independent DP configuration (cell identity, alive rank/size, quorum ID).
         """
+        if args.use_fault_tolerance:
+            # Force synchronous TorchInductor compilation on FT actors. On the rejoin path a
+            # cell is re-created as a fresh actor and recompiles its forward graph on the first
+            # forward; the Inductor async compile-worker pool can deadlock in
+            # async_compile._wait_futures (py-spy confirmed), so the pipeline stage never reaches
+            # send_forward and the peer hangs in recv_forward until the NCCL watchdog. Compiling
+            # synchronously (no worker pool) makes post-rejoin recompiles always complete. Set in
+            # process (not via Ray runtime_env) so it reliably applies before the first compile.
+            import torch._inductor.config as inductor_config
+
+            inductor_config.compile_threads = 1
+            logger.info("FT: forced torch._inductor compile_threads=1 (synchronous compile)")
+
         monkey_patch_torch_dist()
 
         super().init(args, role, with_ref)
