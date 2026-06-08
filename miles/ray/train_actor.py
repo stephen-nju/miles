@@ -102,10 +102,17 @@ class TrainRayActor(RayActor):
             backend = f"cpu:{cpu_backend},cuda:{args.distributed_backend}"
             logger.info(f"FSDP CPU offload enabled, using hybrid backend: {backend}")
 
-        dist.init_process_group(
-            backend=backend,
-            timeout=timedelta(minutes=args.distributed_timeout_minutes),
-        )
+        # device_id binds the default PG to this rank's CUDA device, which makes NCCL eagerly
+        # initialize the communicator at construction time instead of lazily on first collective.
+        # Eager init is required on the FT rejoin path: a freshly respawned cell otherwise
+        # cold-bootstraps many intra-cell comms (TP/EP/expert-TP/...) concurrently during the
+        # first MoE forward, in a data-dependent order serialized by CUDA_DEVICE_MAX_CONNECTIONS=1,
+        # and the expert-parallel halves deadlock mid-forward (the surviving cell's comms are warm,
+        # so only the fresh cell hangs). gloo/CPU backends don't take device_id.
+        init_kwargs = {"backend": backend, "timeout": timedelta(minutes=args.distributed_timeout_minutes)}
+        if "cpu:" not in backend and "gloo" not in backend:
+            init_kwargs["device_id"] = torch.device("cuda", local_rank)
+        dist.init_process_group(**init_kwargs)
         init_gloo_group()
 
         args.rank = dist.get_rank()

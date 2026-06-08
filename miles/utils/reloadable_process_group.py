@@ -25,6 +25,13 @@ def monkey_patch_torch_dist():
     dist.old_new_group = old_new_group
 
     def new_group(*args, **kwargs):
+        # Eagerly initialize NCCL subgroup comms (device_id) so they bootstrap at construction
+        # instead of lazily on first collective. Required on the FT rejoin path: a freshly
+        # respawned cell otherwise cold-inits its many intra-cell comms (TP/EP/expert-TP/...)
+        # concurrently mid-forward and the expert-parallel halves deadlock. gloo groups skip it.
+        _is_gloo = (len(args) >= 3 and args[2] == "gloo") or kwargs.get("backend") == "gloo"
+        if not _is_gloo and "device_id" not in kwargs and torch.cuda.is_available():
+            kwargs["device_id"] = torch.device("cuda", torch.cuda.current_device())
         group = old_new_group(*args, **kwargs)
         # skip none nccl group.
         if len(args) >= 3 and args[2] == "gloo" or "backend" in kwargs and kwargs["backend"] == "gloo":
@@ -158,9 +165,12 @@ class ReloadableProcessGroup(torch.distributed.ProcessGroup):
         for reloadable_group in reloadable_groups:
             if reloadable_group.group is not None:
                 continue
-            group = old_new_group(
-                ranks=reloadable_group.group_info["ranks"], backend=reloadable_group.group_info["backend"]
-            )
+            backend = reloadable_group.group_info["backend"]
+            reload_kwargs = {"ranks": reloadable_group.group_info["ranks"], "backend": backend}
+            # Eagerly init reloaded NCCL comms too (same reason as new_group above).
+            if backend != "gloo" and torch.cuda.is_available():
+                reload_kwargs["device_id"] = torch.device("cuda", torch.cuda.current_device())
+            group = old_new_group(**reload_kwargs)
             reloadable_group.group = group
 
     def rank(self) -> int:
