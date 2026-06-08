@@ -106,6 +106,13 @@ def get_common_train_args(
         f"--actor-num-nodes {mode.train_num_nodes} "
         f"--actor-num-gpus-per-node {mode.train_gpus_per_node} "
         f"--global-batch-size 256 "
+        # Shorten the Megatron NCCL collective watchdog (default 10min) so a cell wedged on
+        # the crash-recovery rejoin path (intra-cell pipeline P2P desync, see agent-context
+        # 2026-06-08-600s-cell-rejoin-hang.md) is killed in ~3min and FT re-heals fast,
+        # instead of stalling ~10min. Kept >120s so the surviving cell's cross-cell indep_dp
+        # allreduce still aborts first (torchft 120s -> DISCARDED, cell stays alive); only a
+        # genuinely-stuck cell hits this watchdog. Normal collectives complete in <30s.
+        "--distributed-timeout-minutes 3 "
         "--delay-split-train-data-by-dp "
         "--use-dynamic-batch-size "
         "--max-tokens-per-gpu 32768 "
