@@ -33,6 +33,17 @@ def create_indep_dp_group(
 
     _TIMEOUT = timedelta(seconds=120)
 
+    if __import__("os").environ.get("MILES_SANITY_INDEPDP"):
+        logger.warning(
+            "INDEPDP_RENDEZVOUS base_store=%r quorum=%s mr=%s alive_rank=%s alive_size=%s cell=%s",
+            store_addr,
+            indep_dp_info.quorum_id,
+            megatron_rank,
+            indep_dp_info.alive_rank,
+            indep_dp_info.alive_size,
+            indep_dp_info.cell_index,
+        )
+
     def _create(pg_cls: type, backend_name: str) -> dist.ProcessGroup:
         pg = pg_cls(timeout=_TIMEOUT)
         pg.configure(
