@@ -165,6 +165,13 @@ _TRAINER_FT_ENV_VARS: dict[str, str] = {
 # are otherwise healthy (verified by hammering them in isolation).
 _FT_NCCL_REJOIN_WORKAROUND_ENV_VARS: dict[str, str] = {
     "NCCL_PROTO": "Simple",
+    # DIAG: PROTO=Simple alone clears the intra-cell first-forward wedge, but the cross-cell
+    # torchft comm degrades to single-member DURING the rejoin step's forward/backward (NCCL
+    # 2.28 coexistence). Test whether disabling cuMem/NVLS (originally bisected out for the
+    # intra-cell wedge) keeps the cross-cell comm intact through compute.
+    "NCCL_CUMEM_ENABLE": "0",
+    "NCCL_CUMEM_HOST_ENABLE": "0",
+    "NCCL_NVLS_ENABLE": "0",
 }
 
 
