@@ -1934,7 +1934,29 @@ def parse_args(add_custom_arguments=None):
     miles_validate_args(args)
 
     if backend == "megatron":
-        megatron_validate_args(args)
+        if args.use_fault_tolerance:
+            # The fault-tolerant (indep_dp) trainer must run with CUDA_DEVICE_MAX_CONNECTIONS != 1:
+            # under a single hardware queue (==1) a freshly respawned cell's concurrent intra-cell
+            # communicators (TP/CP/EP/expert-TP) serialize and deadlock during the first MoE+CP
+            # forward on rejoin. command_utils leaves it unset (CUDA default > 1) in FT mode.
+            assert os.environ.get("CUDA_DEVICE_MAX_CONNECTIONS") != "1", (
+                "The fault-tolerant trainer requires CUDA_DEVICE_MAX_CONNECTIONS to be unset or > 1 "
+                "(it must not be 1)."
+            )
+            # Megatron's validate_args asserts == 1 for TP/CP on pre-Blackwell GPUs. No CUDA context
+            # exists yet at arg-parse time, so satisfy that assertion transiently without touching
+            # Megatron source, then restore our (non-1) setting for the real NCCL/CUDA init.
+            _saved_cdmc = os.environ.get("CUDA_DEVICE_MAX_CONNECTIONS")
+            os.environ["CUDA_DEVICE_MAX_CONNECTIONS"] = "1"
+            try:
+                megatron_validate_args(args)
+            finally:
+                if _saved_cdmc is None:
+                    os.environ.pop("CUDA_DEVICE_MAX_CONNECTIONS", None)
+                else:
+                    os.environ["CUDA_DEVICE_MAX_CONNECTIONS"] = _saved_cdmc
+        else:
+            megatron_validate_args(args)
 
         # always use varlen
         args.variable_seq_lengths = True
