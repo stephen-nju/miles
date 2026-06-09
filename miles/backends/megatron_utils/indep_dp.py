@@ -56,7 +56,9 @@ def create_indep_dp_group(
     return GroupInfo(rank=indep_dp_info.alive_rank, size=indep_dp_info.alive_size, group=nccl_pg, gloo_group=gloo_pg)
 
 
-def _establish_collective_comm(*, nccl_pg: dist.ProcessGroup, gloo_pg: dist.ProcessGroup, indep_dp_info: IndepDPInfo) -> None:
+def _establish_collective_comm(
+    *, nccl_pg: dist.ProcessGroup, gloo_pg: dist.ProcessGroup, indep_dp_info: IndepDPInfo
+) -> None:
     """Force the freshly-configured cross-cell NCCL communicator to form with all members.
 
     torchft forms a degraded single-member NCCL comm if the cells reach the first collective
