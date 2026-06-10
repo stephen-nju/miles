@@ -138,15 +138,18 @@ def get_common_train_args(
 
 
 def get_ft_args(mode: FTTestMode) -> str:
-    # A cell that respawns after a crash does a cold torch.compile of its first forward (~122s),
-    # during which it cannot bump its heartbeat. Raise the heartbeat age well above the recompile
-    # (default 90s) so the slow-but-alive respawned cell is not falsely declared dead; this stays
-    # below the indep_dp comm timeout's effect so a genuinely crashed cell is still recovered.
+    # A cell that respawns after a crash runs a cold torch.compile of its first forward; with the
+    # survivor waiting on the cross-cell collective, a post-rejoin step can take several hundred
+    # seconds (observed up to ~350s). The ordering step_time < indep_dp_comm_timeout(600s) <
+    # heartbeat(700s) keeps the comm from timing out mid-step (which would degrade it to
+    # single-member and apply a wrong gradient) while ensuring that on a genuine crash the survivor
+    # times out and recovers before its own heartbeat is declared stale (default 90s is far too low
+    # -- it makes the waiting survivor look dead and aborts recovery with all-cells-dead).
     return (
         "--use-fault-tolerance "
         "--ft-components train "
         "--control-server-port 0 "
-        "--trainer-heartbeat-checker-max-heartbeat-age 450 "
+        "--trainer-heartbeat-checker-max-heartbeat-age 700 "
     )
 
 
