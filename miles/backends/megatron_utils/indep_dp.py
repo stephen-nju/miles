@@ -135,19 +135,19 @@ def maybe_refresh_reconfigured_comm(parallel_state: ParallelState, rollout_id: i
     old = parallel_state.indep_dp
     quorum_id = args["indep_dp_info"].quorum_id
 
-    # The recreate's store rendezvous must wait for every alive cell. A cell that respawned at this
-    # quorum is still running a cold torch.compile of its first forward (observed ~122s) and reaches
-    # this point much later than the survivor, so a short comm timeout would expire and error the
-    # survivor (cascading to all-cells-dead). Use a generous timeout that comfortably exceeds the
-    # recompile; the trainer heartbeat is bumped from a background thread, so this wait does not trip
-    # the watchdog, and a genuinely dead peer is still caught by the heartbeat checker.
+    # The recreate's store rendezvous must wait for every alive cell, including one that respawned
+    # at this quorum and is still running a cold torch.compile of its first forward (observed
+    # ~122s). The timeout is chosen by the ordering recompile(~122s) < timeout_s(300s) <
+    # heartbeat(450s): long enough to outlast the recompile, but short enough that on a genuine
+    # crash the survivor times out and recovers BEFORE its own heartbeat is declared stale (a 600s
+    # timeout exceeded the 90s default heartbeat and made the survivor look dead -> all-cells-dead).
     fresh = create_indep_dp_group(
         store_addr=args["store_addr"],
         indep_dp_info=args["indep_dp_info"],
         megatron_rank=args["megatron_rank"],
         megatron_world_size=args["megatron_world_size"],
         recreate_tag=f"/recreate/{quorum_id}_{rollout_id}_{attempt}",
-        timeout_s=600,
+        timeout_s=300,
     )
 
     parallel_state.indep_dp = fresh
@@ -186,6 +186,11 @@ def _allreduce_grads_across_replicas(
         f"indep_dp requires intra_dp.size == 1, got {parallel_state.intra_dp.size}. "
         "Simultaneous intra and indep DP is not supported."
     )
+
+    # NCCL 2.28 workaround: refresh a reconfigured (post-rejoin) cross-cell comm that the forward
+    # pass degraded to single-member, so this grad reduction (and the step's later metric reduce)
+    # run over a fresh comm. No-op for the unaffected initial quorum_0 comm.
+    maybe_refresh_reconfigured_comm(parallel_state, rollout_id, attempt)
 
     pg = parallel_state.indep_dp.group
     util = GeneralPGUtil.create(pg)
