@@ -151,8 +151,16 @@ def _build_input_example(metadata: JsonDict) -> InputExample | None:
     )
 
 
-def compute_ifbench_reward(response: str, label: Any, metadata: JsonDict | None = None) -> float:
-    """Score a model response using the official IFBench rules."""
+def compute_ifbench_reward(
+    response: str, label: Any, metadata: JsonDict | None = None, *, strict: bool = True
+) -> float:
+    """Score a model response using the official IFBench rules.
+
+    ``strict`` selects between the two official criteria, exposed as the
+    ``ifbench_strict`` / ``ifbench_loose`` reward types: strict checks the raw
+    response, while loose retries the check against response variants with the
+    leading/trailing line or surrounding ``*`` markdown stripped, so formatting
+    noise around an otherwise-compliant answer is not penalized."""
 
     if metadata is None:
         logger.debug("No metadata provided for IFBench scoring.")
@@ -166,5 +174,8 @@ def compute_ifbench_reward(response: str, label: Any, metadata: JsonDict | None 
         return 0.0
 
     prompt_to_response = {inp.prompt: str(response or "")}
-    output = evaluation_lib.test_instruction_following_strict(inp, prompt_to_response)
+    evaluate = (
+        evaluation_lib.test_instruction_following_strict if strict else evaluation_lib.test_instruction_following_loose
+    )
+    output = evaluate(inp, prompt_to_response)
     return 1.0 if output.follow_all_instructions else 0.0

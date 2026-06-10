@@ -54,10 +54,15 @@ async def async_rm(args, sample: Sample, **kwargs):
         return f1_score(response, label)[0]
     elif rm_type == "gpqa":
         return compute_gpqa_reward(response, label, metadata=metadata)
-    elif rm_type == "ifbench":
+    elif rm_type in ("ifbench", "ifbench_strict", "ifbench_loose"):
         from .ifbench import compute_ifbench_reward
 
-        return compute_ifbench_reward(response, label, metadata=metadata)
+        # Bare "ifbench" keeps its original strict behavior for backward compatibility.
+        return compute_ifbench_reward(response, label, metadata=metadata, strict=(rm_type != "ifbench_loose"))
+    elif rm_type in ("ifeval", "ifeval_strict", "ifeval_loose"):
+        from .ifeval import compute_ifeval_reward
+
+        return compute_ifeval_reward(response, label, metadata=metadata, strict=(rm_type != "ifeval_loose"))
     elif rm_type == "random":
         return random.randint(0, 1)
     elif rm_type:
