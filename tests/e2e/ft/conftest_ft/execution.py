@@ -138,7 +138,16 @@ def get_common_train_args(
 
 
 def get_ft_args(mode: FTTestMode) -> str:
-    return "--use-fault-tolerance " "--ft-components train " "--control-server-port 0 "
+    # A cell that respawns after a crash does a cold torch.compile of its first forward (~122s),
+    # during which it cannot bump its heartbeat. Raise the heartbeat age well above the recompile
+    # (default 90s) so the slow-but-alive respawned cell is not falsely declared dead; this stays
+    # below the indep_dp comm timeout's effect so a genuinely crashed cell is still recovered.
+    return (
+        "--use-fault-tolerance "
+        "--ft-components train "
+        "--control-server-port 0 "
+        "--trainer-heartbeat-checker-max-heartbeat-age 450 "
+    )
 
 
 # Required for reproducibility (ref: https://github.com/THUDM/slime/pull/370)

@@ -27,7 +27,7 @@ def create_indep_dp_group(
     megatron_rank: int,
     megatron_world_size: int,
     recreate_tag: str = "",
-    timeout_s: float = 600,
+    timeout_s: float = 300,
 ) -> GroupInfo:
     if indep_dp_info.alive_size <= 1:
         return GroupInfo(rank=0, size=1, group=None)
@@ -186,11 +186,6 @@ def _allreduce_grads_across_replicas(
         f"indep_dp requires intra_dp.size == 1, got {parallel_state.intra_dp.size}. "
         "Simultaneous intra and indep DP is not supported."
     )
-
-    # NCCL 2.28 workaround: refresh a reconfigured (post-rejoin) cross-cell comm that the forward
-    # pass corrupted to single-member, so this grad reduction (and the step's later metric reduce)
-    # run over an uncorrupted comm. No-op for the unaffected initial quorum_0 comm.
-    maybe_refresh_reconfigured_comm(parallel_state, rollout_id, attempt)
 
     pg = parallel_state.indep_dp.group
     util = GeneralPGUtil.create(pg)
