@@ -190,22 +190,13 @@ def run_training(
         **_DETERMINISTIC_ENV_VARS,
         **_TRAINER_FT_ENV_VARS,
         **_FT_NCCL_REJOIN_WORKAROUND_ENV_VARS,
-        # Share the torch.compile / Inductor cache across all actor processes on the node so a cell
-        # respawned after a crash reuses the survivor's compiled artifacts instead of doing a cold
-        # compile of its first forward (~350s). Without this the survivor blocks on the cross-cell
-        # collective waiting for the recompiling peer long enough to either time out (un-reduced
-        # gradient) or be declared dead (all-cells-dead).
-        "TORCHINDUCTOR_CACHE_DIR": "/tmp/miles_inductor_cache",
-        "TORCHINDUCTOR_FX_GRAPH_CACHE": "1",
         # Run eager (no torch.compile). A cell respawned after a crash cold-recompiles its first
         # forward; under dynamic batch sizes that is a per-shape Inductor compile that is slow
-        # (observed 124s..1510s, growing) and memory-heavy enough to OOM-kill the actor, which the
-        # shared cache does not reliably prevent. That recompile-on-respawn is a torch.compile + FT
-        # infra limitation orthogonal to what these tests assert (FT crash recovery + baseline-vs-
-        # target metric equivalence); both runs are eager so the comparison stays valid.
+        # (observed 124s..1510s, growing) and memory-heavy enough to OOM-kill the actor. That
+        # recompile-on-respawn is a torch.compile + FT infra limitation orthogonal to what these
+        # tests assert (FT crash recovery + baseline-vs-target metric equivalence); both runs are
+        # eager so the comparison stays valid.
         "TORCHDYNAMO_DISABLE": "1",
-        "MILES_SANITY_INDEPDP": "1",  # DIAG (uncommitted): sanity all_reduce(ones) over indep_dp each grad-reduce
-        "RAY_DEDUP_LOGS": "0",  # DIAG (uncommitted): disable Ray log dedup for reliable per-rank diagnostics
         **(extra_env_vars or {}),
     }
     U.execute_train(
