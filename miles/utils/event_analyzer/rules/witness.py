@@ -222,8 +222,14 @@ def _compare_snapshot(
     zero_adv_excused_ids: set[int],
 ) -> WitnessDataMismatchIssue | None:
     stale_set = set(event.stale_ids)
+    # Zero-advantage samples carry no learning signal, and whether they leave a witness trace is
+    # model-dependent: a tied-embedding model (e.g. Qwen3-0.6B) gives every consumed sample a real
+    # backprop gradient and DOES mark the witness, while other models give a zero-advantage sample
+    # exactly-zero gradient and leave it unmarked. So a zero-advantage witness may legitimately be
+    # present OR absent -- excuse it on BOTH sides (not just expected) so neither a present nor an
+    # absent zero-advantage id is flagged. Non-zero-advantage samples remain strictly checked.
     filtered_expected = expected - stale_set - zero_adv_excused_ids
-    filtered_actual = set(event.nonzero_witness_ids) - stale_set
+    filtered_actual = set(event.nonzero_witness_ids) - stale_set - zero_adv_excused_ids
 
     if filtered_expected == filtered_actual:
         return None
