@@ -14,6 +14,11 @@ This directory contains runnable examples:
   Math prompts are scored by a Qwen3-32B teacher and code prompts by a
   Qwen3-Coder-30B-A3B teacher, selected via `--opd-teacher-urls` and a per-row
   `{"metadata": {"opd_teacher": ...}}` tag in the dataset.
+- `run-qwen3-8B-opd-ensemble.sh`: Teacher-ensemble OPD. Every sample is scored
+  by a weighted group of two teachers in parallel and the targets are combined
+  as a probability-space mixture (`--opd-teacher-urls` with comma-separated
+  URLs and `@weight` suffixes), using the exact tail-bucket top-k KL
+  (`--opd-topk-tail-bucket`).
 - `run-qwen3-8B-opd-megatron.sh`: Megatron-loaded teacher OPD.
 
 Use `--opd-log-prob-top-k 0` to run the original sampled-token OPD path.
