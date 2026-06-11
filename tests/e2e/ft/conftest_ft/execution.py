@@ -155,6 +155,22 @@ _TRAINER_FT_ENV_VARS: dict[str, str] = {
     "MILES_EXPERIMENTAL_FT_TRAINER": "1",
 }
 
+# Workaround for a freshly-respawned cell deterministically wedging in its first forward
+# after a crash+rejoin: on NCCL 2.28.x a small AllReduce on the fresh rejoin communicator
+# hangs under the RING_LL protocol (cuda-gdb shows all ranks spinning in
+# ncclDevKernel_AllReduce_Sum_f32_RING_LL). Forcing the Simple protocol avoids the affected
+# path. A two-way bisect proved NCCL_PROTO=Simple is both necessary (dropping it re-wedges)
+# and sufficient (it alone clears the wedge; the cuMem/NVLS-off vars first tried alongside it
+# were ghosts -- NCCL logs show NVLS allocating fine on all ranks). The freshly-built comms
+# are otherwise healthy (verified by hammering them in isolation).
+#
+# TODO: this is an NCCL-2.28.x-specific bug workaround, not a real fix. Investigate the
+# underlying RING_LL deadlock on a recreated communicator (NCCL upstream issue / version bump)
+# so this env override can be dropped.
+_FT_NCCL_REJOIN_WORKAROUND_ENV_VARS: dict[str, str] = {
+    "NCCL_PROTO": "Simple",
+}
+
 
 def run_training(
     train_args: str,
@@ -165,7 +181,12 @@ def run_training(
 ) -> None:
     if dump_dir is not None and os.path.exists(dump_dir):
         shutil.rmtree(dump_dir)
-    merged_env_vars = {**_DETERMINISTIC_ENV_VARS, **_TRAINER_FT_ENV_VARS, **(extra_env_vars or {})}
+    merged_env_vars = {
+        **_DETERMINISTIC_ENV_VARS,
+        **_TRAINER_FT_ENV_VARS,
+        **_FT_NCCL_REJOIN_WORKAROUND_ENV_VARS,
+        **(extra_env_vars or {}),
+    }
     U.execute_train(
         train_args=train_args,
         num_gpus_per_node=mode.train_gpus_per_node,
