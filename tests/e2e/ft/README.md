@@ -197,14 +197,16 @@ strict grad/activation/metric comparison with zero threshold relaxation.
 What stays real on the target during injected rollouts: engines and generation itself (the
 generated samples are discarded after the fact), update_weights after the degraded commit
 and after healing, and health-monitor pause/resume — i.e. the whole
-crash→retry→heal→weight-sync path. Injected rollouts' dump comparison gives **grads** (not
-activations) a `max_abs <= 3e-3` floor: the training data is bitwise-identical, but the
-target's weights carry the fault-inherent ulp drift of the degraded commit, which
-propagates into cancellation-dominated near-zero grads as absolute noise measured up to
-2.8e-3 (40 tensors, 2026-06-12; e.g. q_layernorm grads at rel 20% but max_abs 2.6e-3)
-while real grads sit at ~1e-2 — the same argument as the pre-existing 1e-3 QK-norm floor,
-recalibrated for the converged dense model whose near-zero grads are smaller. Activations
-and all pre-fault rollouts keep the strict predicate set.
+crash→retry→heal→weight-sync path. Injected rollouts' dump comparison gives a
+`max_abs <= 3e-3` floor to the **measured noisy grad families only** (decoder-layer
+QK-norms, folded `layer_norm_weight`s, and the attention/MLP weight matrices): the
+training data is bitwise-identical, but the target's weights carry the fault-inherent ulp
+drift of the degraded commit, which lands in those cancellation-dominated near-zero grads
+as absolute noise measured up to 2.8e-3 (40 tensors, 2026-06-12; e.g. q_layernorm grads at
+rel 20% but max_abs 2.6e-3) while real grads sit at ~1e-2 — the same argument as the
+pre-existing 1e-3 QK-norm floor, recalibrated for the converged dense model whose
+near-zero grads are smaller. Embedding/output-layer/final-norm grads, all activations, and
+all pre-fault rollouts keep the strict predicate set.
 
 The discarded generation is not wasted: each injected
 rollout asserts the generated responses match the recording at a mean per-token positional
@@ -232,7 +234,7 @@ This is why the scenario needs the **dense** model: on the truncated MoE the unc
 logits and router near-ties amplify ulp drift into near-wholesale divergence (0.19), which
 is not separable from the unrelated-content regime, while the dense model's 0.63 sits two
 orders of magnitude above it. The scenario passes
-`--ci-inject-rollout-data-min-match-ratio 0.4` — comfortably below the legitimate 0.63
+`--ci-inject-rollout-data-min-match-ratio 0.5` — below the legitimate 0.63
 and far above what any gross weight corruption can produce.
 
 ### `scenario_deterministic`

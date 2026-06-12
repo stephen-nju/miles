@@ -36,12 +36,18 @@ _DIFF_THRESHOLDS: list[tuple[str, str]] = [
 
 # Post-fault (injected) rollouts in the real_rollout mode: training data is injected to be
 # bitwise-identical, but the target's weights carry the fault-inherent ulp drift of the
-# degraded-quorum commit. On the converged dense model that drift propagates into
-# cancellation-dominated near-zero grads as absolute noise measured <= 2.8e-3 (40 tensors,
-# 2026-06-12; q_layernorm up to rel 20% at max_abs 2.6e-3) while real grads sit at ~1e-2,
-# so grads get a 3e-3 floor. Activations/values stay strict (all passed at rel <= 0.85%).
+# degraded-quorum commit. On the converged dense model that drift lands in the
+# cancellation-dominated near-zero grads of the decoder-layer norms and attention/MLP
+# matrices as absolute noise measured <= 2.8e-3 (40 tensors, 2026-06-12; q_layernorm up to
+# rel 20% at max_abs 2.6e-3) while real grads sit at ~1e-2 — only those measured families
+# get a 3e-3 floor. Everything else (embeddings, output layer, final norm, all
+# activations/values) stays strict, and all passed at rel <= 0.85% in the same run.
 _POST_FAULT_DIFF_THRESHOLDS: list[tuple[str, str]] = [
-    (r"grad__.*", "rel <= 0.0085 or max_abs <= 3e-3"),
+    (r"grad__.*\.[qk]_layernorm\..*", "rel <= 0.0085 or max_abs <= 3e-3"),
+    (r"grad__.*\.layer_norm_weight", "rel <= 0.0085 or max_abs <= 3e-3"),
+    (r"grad__.*\.self_attention\.linear_qkv\.weight", "rel <= 0.0085 or max_abs <= 3e-3"),
+    (r"grad__.*\.self_attention\.linear_proj\.weight", "rel <= 0.0085 or max_abs <= 3e-3"),
+    (r"grad__.*\.mlp\.linear_fc[12]\.weight", "rel <= 0.0085 or max_abs <= 3e-3"),
     (".*", "rel <= 0.0085"),
 ]
 
@@ -76,14 +82,11 @@ def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enabl
             base += f"--ci-ft-test-actions '{json.dumps(_WITH_FAILURE_ACTIONS)}' "
             if mode.has_real_rollout:
                 # Post-fault rollouts inject the baseline's recorded data (see README).
-                # Match threshold calibrated on the dense model (2026-06-12, 256 samples):
-                # correct weights measure mean 0.63 (one ulp-flip then cascade per response);
-                # unrelated content measures ~0.005-0.03. 0.4 separates both by a wide margin.
                 baseline_dump_dir = dump_dir.replace("/target/", "/baseline/")
                 base += (
                     f"--ci-inject-rollout-data-path {baseline_dump_dir}/rollout_data/{{rollout_id}}.pt "
                     f"--ci-inject-rollout-data-start-rollout-id {NUM_PHASE_A_STEPS + 2} "
-                    "--ci-inject-rollout-data-min-match-ratio 0.4 "
+                    "--ci-inject-rollout-data-min-match-ratio 0.5 "
                 )
 
     return base
