@@ -12,8 +12,18 @@ from miles.utils.indep_dp import IndepDPInfo
 
 @pytest.fixture(scope="module", autouse=True)
 def ray_env():
+    if ray.is_initialized():
+        # Reuse the cluster some outer fixture created (e.g. the session-scoped
+        # one in tests/conftest.py) and never tear down what we did not create.
+        yield
+        return
+
     init_kwargs: dict = {"ignore_reinit_error": True}
-    if not ray.is_initialized() and "RAY_ADDRESS" not in os.environ:
+    if "RAY_ADDRESS" not in os.environ:
+        # address="local" forces a fresh cluster: with no address, ray.init
+        # auto-connects to any leaked local cluster (via /tmp/ray), and
+        # connecting with num_cpus/num_gpus set is a hard ValueError.
+        init_kwargs["address"] = "local"
         init_kwargs["num_cpus"] = 4
         init_kwargs["num_gpus"] = 0
     ray.init(**init_kwargs)
