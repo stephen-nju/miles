@@ -6,47 +6,47 @@ from typing import Annotated
 
 import typer
 
-from tests.e2e.ft.conftest_ft.fault_injection import _MEAN_INTERVAL_SECONDS, _spawn_fault_injector
+from tests.e2e.ft.conftest_ft.fault_injection import MEAN_INTERVAL_SECONDS, spawn_fault_injector
 
 import miles.utils.external_utils.command_utils as U
 
 app: typer.Typer = typer.Typer()
 
-TEST_NAME: str = "trainer_ft_random"
+TEST_NAME: str = "trainer_ft_realistic_gsm8k"
 
-_GSM8K_MODEL_NAME: str = "Qwen2.5-0.5B-Instruct"
-_GSM8K_MODEL_TYPE: str = "qwen2.5-0.5B"
+_MODEL_NAME: str = "Qwen2.5-0.5B-Instruct"
+_MODEL_TYPE: str = "qwen2.5-0.5B"
 # Same disaggregated layout as the dp2_cp2_real_rollout mode: 2 cells x CP2 on
 # 4 training GPUs, plus 4 rollout engines x 1 GPU.
-_GSM8K_TRAIN_GPUS: int = 4
-_GSM8K_ROLLOUT_GPUS: int = 4
+_TRAIN_GPUS: int = 4
+_ROLLOUT_GPUS: int = 4
 # Provisional threshold pending calibration runs (the no-fault baseline
 # tests/e2e/long/test_qwen2.5_0.5B_gsm8k.py asserts 0.55 at 250 steps); update
 # after collecting the fault-run distribution.
-_GSM8K_DEFAULT_METRIC_THRESHOLD: float = 0.45
+_DEFAULT_METRIC_THRESHOLD: float = 0.45
 
-@app.command(name="run-gsm8k")
-def run_ci_gsm8k(
+@app.command(name="run")
+def run_ci(
     seed: Annotated[int, typer.Option(help="Random seed for fault injection")] = 42,
     num_rollout: Annotated[int, typer.Option(help="Number of rollouts")] = 250,
     crash_probability: Annotated[float, typer.Option(help="Per-step crash probability per cell")] = 0.1,
     metric_threshold: Annotated[
         float, typer.Option(help="eval/gsm8k accuracy threshold")
-    ] = _GSM8K_DEFAULT_METRIC_THRESHOLD,
+    ] = _DEFAULT_METRIC_THRESHOLD,
 ) -> None:
     """Random failure soak on the real gsm8k RL recipe, asserting eval accuracy.
 
-    Same external fault injection as ``run``, but the workload is the recipe of
+    Same external fault injection as scenario_ft_random's soak, but the workload is the recipe of
     tests/e2e/long/test_qwen2.5_0.5B_gsm8k.py (whose regular CI runs serve as the
     no-fault reference wandb curves) with train-side fault tolerance. Besides
     surviving the crashes, the run must reach the eval/gsm8k accuracy threshold —
     i.e. fault recovery preserves end-to-end learning, which the comparison
     scenarios cannot observe.
 
-    Doubles as the CI entry point: the CI file calls ``run_ci_gsm8k()`` (defaults);
-    manual smoke/calibration runs use the ``run-gsm8k`` CLI subcommand.
+    Doubles as the CI entry point: the CI file calls ``run_ci()`` (defaults);
+    manual smoke/calibration runs use the ``run`` CLI subcommand.
     """
-    mean_interval: float = _MEAN_INTERVAL_SECONDS / max(crash_probability, 0.01)
+    mean_interval: float = MEAN_INTERVAL_SECONDS / max(crash_probability, 0.01)
     print(f"Seed: {seed}, Rollouts: {num_rollout}, Mean injection interval: {mean_interval:.1f}s")
 
     _prepare_gsm8k()
@@ -55,13 +55,13 @@ def run_ci_gsm8k(
 
     train_args = _get_gsm8k_train_args(seed=seed, num_rollout=num_rollout, metric_threshold=metric_threshold)
 
-    stop_event, injector_thread = _spawn_fault_injector(seed=seed, mean_interval_seconds=mean_interval)
+    stop_event, injector_thread = spawn_fault_injector(seed=seed, mean_interval_seconds=mean_interval)
 
     try:
         U.execute_train(
             train_args=train_args,
-            num_gpus_per_node=_GSM8K_TRAIN_GPUS + _GSM8K_ROLLOUT_GPUS,
-            megatron_model_type=_GSM8K_MODEL_TYPE,
+            num_gpus_per_node=_TRAIN_GPUS + _ROLLOUT_GPUS,
+            megatron_model_type=_MODEL_TYPE,
             extra_env_vars={
                 "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
                 # --ft-components train depends on cell-based indep_dp, which only
@@ -81,13 +81,13 @@ def run_ci_gsm8k(
 
 def _prepare_gsm8k() -> None:
     U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(f"hf download Qwen/{_GSM8K_MODEL_NAME} --local-dir /root/models/{_GSM8K_MODEL_NAME}")
+    U.exec_command(f"hf download Qwen/{_MODEL_NAME} --local-dir /root/models/{_MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/gsm8k")
 
 
 
 def _get_gsm8k_train_args(*, seed: int, num_rollout: int, metric_threshold: float) -> str:
-    ckpt_args = f"--hf-checkpoint /root/models/{_GSM8K_MODEL_NAME}/ " f"--ref-load /root/models/{_GSM8K_MODEL_NAME}/ "
+    ckpt_args = f"--hf-checkpoint /root/models/{_MODEL_NAME}/ " f"--ref-load /root/models/{_MODEL_NAME}/ "
 
     rollout_args = (
         "--prompt-data /root/datasets/gsm8k/train.parquet "
@@ -142,7 +142,7 @@ def _get_gsm8k_train_args(*, seed: int, num_rollout: int, metric_threshold: floa
     )
 
     sglang_args = (
-        f"--rollout-num-gpus {_GSM8K_ROLLOUT_GPUS} "
+        f"--rollout-num-gpus {_ROLLOUT_GPUS} "
         "--rollout-num-gpus-per-engine 1 "
         "--sglang-mem-fraction-static 0.7 "
         "--sglang-enable-metrics "
@@ -151,7 +151,7 @@ def _get_gsm8k_train_args(*, seed: int, num_rollout: int, metric_threshold: floa
     fault_tolerance_args = (
         "--use-fault-tolerance "
         "--ft-components train "
-        f"--control-server-port {_CONTROL_SERVER_PORT} "
+        f"--control-server-port {CONTROL_SERVER_PORT} "
         "--mini-ft-controller-enable "
     )
 
@@ -172,7 +172,7 @@ def _get_gsm8k_train_args(*, seed: int, num_rollout: int, metric_threshold: floa
         # need to comment this when using model with MLA
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        f"--actor-num-gpus-per-node {_GSM8K_TRAIN_GPUS} "
+        f"--actor-num-gpus-per-node {_TRAIN_GPUS} "
         "--megatron-to-hf-mode bridge "
     )
 
@@ -181,7 +181,7 @@ def _get_gsm8k_train_args(*, seed: int, num_rollout: int, metric_threshold: floa
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(f'test_{TEST_NAME}_gsm8k.py', run_name_prefix=f'seed{seed}')} "
+        f"{U.get_default_wandb_args(f'test_{TEST_NAME}.py', run_name_prefix=f'seed{seed}')} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "

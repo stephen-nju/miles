@@ -1,18 +1,18 @@
 # NOTE: You MUST read tests/e2e/ft/README.md as source-of-truth and documentations
 # WARNING: Do NOT relax any assert logic in this file. All assertions must remain strict.
 
-import logging
-import os
-import random
-import threading
-import time
+
+
+
+
+
 from typing import Annotated
 
-import requests
+
 import typer
 
 from tests.e2e.ft.conftest_ft.app import resolve_dump_dir
-from tests.e2e.ft.conftest_ft.fault_injection import _CONTROL_SERVER_PORT, _MEAN_INTERVAL_SECONDS, _spawn_fault_injector
+from tests.e2e.ft.conftest_ft.fault_injection import CONTROL_SERVER_PORT, MEAN_INTERVAL_SECONDS, spawn_fault_injector
 from tests.e2e.ft.conftest_ft.execution import (
     get_common_train_args,
     get_ft_args,
@@ -22,10 +22,10 @@ from tests.e2e.ft.conftest_ft.execution import (
 )
 from tests.e2e.ft.conftest_ft.modes import FTTestMode, resolve_mode
 
-import miles.utils.external_utils.command_utils as U
-from miles.utils.test_utils.fault_injector import FailureMode
 
-logger = logging.getLogger(__name__)
+
+
+
 
 app: typer.Typer = typer.Typer()
 
@@ -51,7 +51,7 @@ def run_ci(
     ft_mode: FTTestMode = resolve_mode(mode)
     dump_dir: str = resolve_dump_dir(f"{TEST_NAME}_{mode}")
     print(f"Dump directory: {dump_dir}")
-    mean_interval: float = _MEAN_INTERVAL_SECONDS / max(crash_probability, 0.01)
+    mean_interval: float = MEAN_INTERVAL_SECONDS / max(crash_probability, 0.01)
     print(f"Seed: {seed}, Steps: {num_steps}, Mean injection interval: {mean_interval:.1f}s")
 
     prepare(ft_mode)
@@ -62,11 +62,11 @@ def run_ci(
     train_args = (
         get_common_train_args(ft_mode, dump_dir=dump_dir, num_steps=num_steps, debug_rollout_data_dir=cyclic_data_dir)
         + get_ft_args(ft_mode)
-        + f"--control-server-port {_CONTROL_SERVER_PORT} "
+        + f"--control-server-port {CONTROL_SERVER_PORT} "
         + "--mini-ft-controller-enable "
     )
 
-    stop_event, injector_thread = _spawn_fault_injector(seed=seed, mean_interval_seconds=mean_interval)
+    stop_event, injector_thread = spawn_fault_injector(seed=seed, mean_interval_seconds=mean_interval)
 
     try:
         run_training(train_args=train_args, mode=ft_mode)

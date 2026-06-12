@@ -11,17 +11,17 @@ from miles.utils.test_utils.fault_injector import FailureMode
 
 logger = logging.getLogger(__name__)
 
-_CONTROL_SERVER_PORT: int = 18080
-_MEAN_INTERVAL_SECONDS: float = 60.0
+CONTROL_SERVER_PORT: int = 18080
+MEAN_INTERVAL_SECONDS: float = 60.0
 # Hard floor between consecutive injections so the FT controller has time to
 # spawn the replacement actor and let it rejoin before the next crash. Without
 # this, the exponential delay can produce several injections within a few
 # seconds, causing the all-cells-dead cascade.
-_MIN_GAP_BETWEEN_INJECTIONS_SECONDS: float = 30.0
-_FAILURE_MODES: list[FailureMode] = [FailureMode.SIGKILL, FailureMode.EXIT, FailureMode.SEGFAULT]
+MIN_GAP_BETWEEN_INJECTIONS_SECONDS: float = 30.0
+FAILURE_MODES: list[FailureMode] = [FailureMode.SIGKILL, FailureMode.EXIT, FailureMode.SEGFAULT]
 
 
-def _run_fault_injection_loop(
+def run_fault_injection_loop(
     *,
     base_url: str,
     seed: int,
@@ -37,11 +37,11 @@ def _run_fault_injection_loop(
             break
 
         elapsed = time.monotonic() - last_injection_at
-        if elapsed < _MIN_GAP_BETWEEN_INJECTIONS_SECONDS:
+        if elapsed < MIN_GAP_BETWEEN_INJECTIONS_SECONDS:
             logger.info(
                 "Skipping injection: only %.1fs since last, need %.1fs",
                 elapsed,
-                _MIN_GAP_BETWEEN_INJECTIONS_SECONDS,
+                MIN_GAP_BETWEEN_INJECTIONS_SECONDS,
             )
             continue
 
@@ -74,7 +74,7 @@ def _run_fault_injection_loop(
 
         target = rng.choice(alive)
         cell_name = target["metadata"]["name"]
-        mode = rng.choice(_FAILURE_MODES)
+        mode = rng.choice(FAILURE_MODES)
 
         try:
             resp = requests.post(
@@ -88,11 +88,11 @@ def _run_fault_injection_loop(
             logger.info("Failed to inject fault into %s", cell_name, exc_info=True)
 
 
-def _spawn_fault_injector(*, seed: int, mean_interval_seconds: float) -> tuple[threading.Event, threading.Thread]:
-    base_url = f"http://localhost:{_CONTROL_SERVER_PORT}"
+def spawn_fault_injector(*, seed: int, mean_interval_seconds: float) -> tuple[threading.Event, threading.Thread]:
+    base_url = f"http://localhost:{CONTROL_SERVER_PORT}"
     stop_event = threading.Event()
     injector_thread = threading.Thread(
-        target=_run_fault_injection_loop,
+        target=run_fault_injection_loop,
         kwargs={
             "base_url": base_url,
             "seed": seed,
