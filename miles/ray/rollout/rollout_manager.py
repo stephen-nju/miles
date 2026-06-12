@@ -45,8 +45,8 @@ class RolloutManager:
     """The class to run rollout and convert rollout data to training data."""
 
     def __init__(self, args, pg):
-        configure_logger(args, source=RolloutManagerProcessIdentity())
         event_logger.restore(args)
+        configure_logger(args, source=RolloutManagerProcessIdentity())
 
         self.pg = pg
         self.args = args
@@ -98,8 +98,6 @@ class RolloutManager:
     # TODO: may have a `async def init` here later
 
     def dispose(self):
-        # The analysis at the start of each train() call only covers earlier rollouts, so
-        # the final rollout would otherwise never be analyzed.
         event_analyzer.run_analysis_from_args(self.args)
         if self._metric_checker is not None:
             self._metric_checker.dispose()

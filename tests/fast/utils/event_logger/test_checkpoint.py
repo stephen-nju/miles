@@ -35,8 +35,7 @@ class TestSnapshotRestoreRoundtrip:
         event_logger.restore(_args(event_dir=events, load=ckpt))
 
         assert (events / "main.jsonl").read_text() == "committed\n"
-        # Live-only files are truncated, not unlinked: their writers keep open handles.
-        assert (events / "straggler.jsonl").read_text() == ""
+        assert not (events / "straggler.jsonl").exists()
 
     def test_snapshot_overwrites_previous_snapshot_of_same_iteration(self, tmp_path: Path) -> None:
         """Re-saving the same iteration replaces its snapshot."""
@@ -48,7 +47,7 @@ class TestSnapshotRestoreRoundtrip:
         (events / "main.jsonl").write_text("v2\n")
         event_logger.snapshot(_args(event_dir=events, save=ckpt), iteration=1)
 
-        assert (ckpt / "debug_events" / "iter_0000001" / "main.jsonl").read_text() == "v2\n"
+        assert (ckpt / "iter_0000001" / "debug_events" / "main.jsonl").read_text() == "v2\n"
 
 
 class TestNoOpCases:

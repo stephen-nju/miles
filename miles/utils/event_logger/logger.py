@@ -6,7 +6,7 @@ from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any
 
 from pydantic import TypeAdapter
 
@@ -23,7 +23,7 @@ class EventLogger:
         self._log_dir = Path(log_dir)
         self._log_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
-        self._file: TextIO = open(self._log_dir / file_name, "a", encoding="utf-8")
+        self._path = self._log_dir / file_name
         self._source = source
         self._context_var: contextvars.ContextVar[dict[str, Any]] = contextvars.ContextVar(
             "event_logger_context",
@@ -59,14 +59,15 @@ class EventLogger:
         )
         line = event.model_dump_json() + "\n"
         with self._lock:
-            self._file.write(line)
-            self._file.flush()
+            # Opened per write so the file can be replaced (e.g. restored from a
+            # checkpoint snapshot) at any point between events.
+            with open(self._path, "a", encoding="utf-8") as f:
+                f.write(line)
         if print_log:
             logger.info("Event logged: %s", getattr(event, "type", type(event).__name__))
 
     def close(self) -> None:
-        with self._lock:
-            self._file.close()
+        pass
 
 
 _event_logger: EventLogger | None = None

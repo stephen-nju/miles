@@ -50,8 +50,7 @@ class WitnessAllocateIdEvent(EventBase):
     rollout_id: int
     attempt: int
     witness_id_to_sample_index: dict[int, int]
-    # Allocator counter AFTER this allocation; the latest event's value is how a resumed
-    # run recovers the allocator state (see miles.utils.witness.allocator).
+    # Allocator counter after this allocation; a resumed run recovers the allocator from it.
     counter_after: int
 
 

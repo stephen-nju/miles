@@ -156,14 +156,13 @@ class TestWitnessIdAllocatorResume:
         assert info.witness_ids == [10, 11, 12, 13, 14]
         assert resumed.counter == 15
 
-    def test_resume_with_smaller_counter_is_noop(self) -> None:
-        """resume() never moves the counter backwards."""
+    def test_resume_backwards_is_rejected(self) -> None:
+        """resume() must never move the counter backwards."""
         allocator = WitnessIdAllocator(buffer_size=100)
         allocator.allocate(10)
 
-        allocator.resume(3)
-
-        assert allocator.allocate(1).witness_ids == [10]
+        with pytest.raises(AssertionError):
+            allocator.resume(3)
 
     def test_counter_matches_uninterrupted_run(self) -> None:
         """A save/resume sequence allocates the same ids as one uninterrupted allocator."""

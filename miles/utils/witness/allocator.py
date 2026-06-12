@@ -17,12 +17,11 @@ class WitnessIdAllocator:
 
     @property
     def counter(self) -> int:
-        """Monotone count of ids ever allocated (logged with each allocate event)."""
         return self._counter
 
     def resume(self, counter: int) -> None:
-        """Continue from a counter persisted by a previous run (no-op if not ahead)."""
-        self._counter = max(self._counter, counter)
+        assert counter >= self._counter
+        self._counter = counter
 
     def allocate(self, num_ids: int) -> WitnessInfo:
         assert num_ids <= self._buffer_size, (
@@ -39,14 +38,7 @@ class WitnessIdAllocator:
 
 
 def read_persisted_witness_counter(event_dir: Path) -> int:
-    """Recover the allocator counter from the event directory.
-
-    The event directory is the witness machinery's persistence layer: it is checkpointed
-    and restored together with the model (miles.utils.event_logger.checkpoint), so the
-    latest allocate event in it reflects exactly the allocations committed up to the
-    loaded checkpoint. Resuming from it keeps the id stream identical to a
-    never-interrupted run.
-    """
+    """Recover the allocator counter from the (checkpoint-restored) event directory."""
     events = read_events(event_dir)
     return max((e.counter_after for e in events if isinstance(e, WitnessAllocateIdEvent)), default=0)
 
