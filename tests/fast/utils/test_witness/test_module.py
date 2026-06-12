@@ -357,7 +357,11 @@ class TestZeroWitnessRowsMegatronOptimizers:
         """Stale rows inside the local dist-opt shard are zeroed in the fp32 shard and its Adam state."""
         witness = _DataWitness(buffer_size=10)
         witness.witness.weight.data.fill_(1.0)
-        config = SimpleNamespace(use_precision_aware_optimizer_no_fp8_or_ds_fp8=False)
+        config = SimpleNamespace(
+            use_precision_aware_optimizer_no_fp8_or_ds_fp8=False,
+            optimizer_cpu_offload=False,
+            optimizer="adam",
+        )
         dist_opt, main_shard = self._make_distributed_optimizer(
             witness.witness.weight, start=4, end=10, config=config
         )
@@ -380,7 +384,11 @@ class TestZeroWitnessRowsMegatronOptimizers:
         """A chained dist-opt instance owning no shard of the witness param is skipped, the owner still clears."""
         witness = _DataWitness(buffer_size=10)
         witness.witness.weight.data.fill_(1.0)
-        config = SimpleNamespace(use_precision_aware_optimizer_no_fp8_or_ds_fp8=False)
+        config = SimpleNamespace(
+            use_precision_aware_optimizer_no_fp8_or_ds_fp8=False,
+            optimizer_cpu_offload=False,
+            optimizer="adam",
+        )
         dist_opt, main_shard = self._make_distributed_optimizer(
             witness.witness.weight, start=0, end=10, config=config
         )

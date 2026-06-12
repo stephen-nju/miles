@@ -190,7 +190,8 @@ def _zero_witness_rows(*, witness: _DataWitness, idx: Tensor, optimizer: torch.o
         if isinstance(inner_optimizer, DistributedOptimizer):
             _zero_rows_in_distributed_optimizer(optimizer=inner_optimizer, model_param=model_weight, idx=idx)
         elif isinstance(inner_optimizer, MegatronOptimizer):
-            _zero_rows_keyed_by_main_param(model_param=model_weight, idx=idx, state=inner_optimizer.optimizer.state)
+            # miles forces use_distributed_optimizer, so other Megatron wrappers are unreachable.
+            raise NotImplementedError(f"unsupported Megatron optimizer wrapper: {type(inner_optimizer).__name__}")
         else:
             _zero_rows_keyed_by_main_param(model_param=model_weight, idx=idx, state=inner_optimizer.state)
 
@@ -203,6 +204,8 @@ def _iter_inner_optimizers(optimizer: torch.optim.Optimizer) -> list[torch.optim
 
 def _zero_rows_in_distributed_optimizer(*, optimizer: DistributedOptimizer, model_param: Tensor, idx: Tensor) -> None:
     assert not optimizer.config.use_precision_aware_optimizer_no_fp8_or_ds_fp8
+    assert not optimizer.config.optimizer_cpu_offload, "HybridDeviceOptimizer state layout is not supported"
+    assert optimizer.config.optimizer == "adam", f"unsupported optimizer kernel: {optimizer.config.optimizer}"
     if model_param not in optimizer.model_param_gbuf_map:
         # This dist-opt instance (e.g. the expert one) or this rank owns no shard of the param.
         return
@@ -247,8 +250,8 @@ def _zero_state_rows(*, state: dict[Tensor, dict[str, Tensor]], optimizer_key: T
 
     param_state = state[optimizer_key]
     for key in ("exp_avg", "exp_avg_sq"):
-        if key in param_state:
-            param_state[key][idx] = 0.0
+        assert key in param_state, f"expected Adam state key {key!r}, got {sorted(param_state)}"
+        param_state[key][idx] = 0.0
 
 
 def _record_and_log_witness_param(
