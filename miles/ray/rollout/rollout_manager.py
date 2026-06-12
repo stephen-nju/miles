@@ -334,4 +334,3 @@ class EnginesAndLock:
     has_new_engines: bool
     engine_gpu_counts: list[int]
     engine_gpu_offsets: list[int]
-
