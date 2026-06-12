@@ -6,7 +6,13 @@ import pytest
 import torch
 from tests.fast.ray.rollout.conftest import make_args, make_sample, make_samples_grouped
 
-from miles.ray.rollout.debug_data import load_debug_rollout_data, save_debug_rollout_data
+from miles.ray.rollout.debug_data import (
+    assert_injected_rollout_data_files_exist,
+    load_debug_rollout_data,
+    load_injected_rollout_data,
+    save_debug_rollout_data,
+    should_inject_rollout_data,
+)
 
 # ----------------------------- save / load round-trip -----------------------------
 
@@ -126,3 +132,83 @@ class TestSubsample:
         loaded, _metadata = load_debug_rollout_data(args, rollout_id=0)
         assert len(loaded) == 5
         assert [s.index for s in loaded] == [0, 1, 7, 8, 9]
+
+
+# ----------------------------- CI rollout-data injection -----------------------------
+
+
+def _save_recording(tmp_path: Path, rollout_id: int, *, metadata: dict | None = None) -> str:
+    """Record one rollout file in --save-debug-rollout-data format; return the template."""
+    template = str(tmp_path / "rollout_{rollout_id}.pt")
+    args = make_args(save_debug_rollout_data=template)
+    save_debug_rollout_data(
+        args, [make_sample(index=rollout_id)], rollout_id=rollout_id, evaluation=False, metadata=metadata
+    )
+    return template
+
+
+class TestShouldInjectRolloutData:
+    def test_false_when_injection_not_configured(self):
+        """Without --ci-inject-rollout-data-path, no rollout is injected."""
+        args = make_args()
+        assert should_inject_rollout_data(args, rollout_id=0) is False
+
+    @pytest.mark.parametrize(("rollout_id", "expected"), [(2, False), (3, True), (4, True)])
+    def test_injects_only_at_or_after_start_rollout_id(self, rollout_id: int, expected: bool):
+        """Rollouts before the start id keep their generated data; later ones are injected."""
+        args = make_args(
+            ci_inject_rollout_data_path="/recorded/{rollout_id}.pt",
+            ci_inject_rollout_data_start_rollout_id=3,
+        )
+        assert should_inject_rollout_data(args, rollout_id=rollout_id) is expected
+
+
+class TestLoadInjectedRolloutData:
+    def test_round_trip_returns_samples_and_metadata(self, tmp_path: Path):
+        """Injection loads samples and metadata from a --save-debug-rollout-data recording."""
+        template = _save_recording(tmp_path, 3, metadata={"dynamic_global_batch_size": 16})
+        args = make_args(ci_inject_rollout_data_path=template, ci_inject_rollout_data_start_rollout_id=3)
+
+        data, metadata = load_injected_rollout_data(args, rollout_id=3)
+
+        assert [s.index for s in data] == [3]
+        assert metadata == {"dynamic_global_batch_size": 16}
+
+    def test_missing_recording_fails_loudly(self, tmp_path: Path):
+        """A missing recorded file raises with the resolved path instead of training on wrong data."""
+        template = str(tmp_path / "rollout_{rollout_id}.pt")
+        args = make_args(ci_inject_rollout_data_path=template, ci_inject_rollout_data_start_rollout_id=3)
+
+        with pytest.raises(AssertionError, match="rollout_7.pt"):
+            load_injected_rollout_data(args, rollout_id=7)
+
+
+class TestAssertInjectedRolloutDataFilesExist:
+    def test_passes_when_all_recordings_exist(self, tmp_path: Path):
+        """Startup check passes when every injected rollout in [start, num_rollout) is recorded."""
+        template = _save_recording(tmp_path, 3)
+        _save_recording(tmp_path, 4)
+        args = make_args(
+            ci_inject_rollout_data_path=template, ci_inject_rollout_data_start_rollout_id=3, num_rollout=5
+        )
+
+        assert_injected_rollout_data_files_exist(args)
+
+    def test_raises_listing_missing_recordings(self, tmp_path: Path):
+        """Startup check fails fast and names the missing files."""
+        template = _save_recording(tmp_path, 3)
+        args = make_args(
+            ci_inject_rollout_data_path=template, ci_inject_rollout_data_start_rollout_id=3, num_rollout=5
+        )
+
+        with pytest.raises(AssertionError, match="rollout_4.pt"):
+            assert_injected_rollout_data_files_exist(args)
+
+    def test_skipped_when_num_rollout_unknown(self, tmp_path: Path):
+        """num_rollout=None (derived from num_epoch later) skips the startup check."""
+        template = str(tmp_path / "rollout_{rollout_id}.pt")
+        args = make_args(
+            ci_inject_rollout_data_path=template, ci_inject_rollout_data_start_rollout_id=3, num_rollout=None
+        )
+
+        assert_injected_rollout_data_files_exist(args)

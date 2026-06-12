@@ -97,6 +97,8 @@ def make_args(**overrides: Any) -> Namespace:
         save_debug_rollout_data=None,
         load_debug_rollout_data=None,
         load_debug_rollout_data_subsample=None,
+        ci_inject_rollout_data_path=None,
+        ci_inject_rollout_data_start_rollout_id=None,
         # CI
         ci_test=False,
         # dumper (sglang debug dumper integration)
