@@ -89,6 +89,7 @@ class RolloutManager:
 
         # TODO will be replaced by full ft, thus temporarily leave it without modifications
         self._health_monitors = []
+        self._ci_fault_injection_pending = False
         if not self.args.debug_train_only and self.args.use_fault_tolerance:
             for srv in self.servers.values():
                 for group in srv.server_groups:
@@ -315,7 +316,7 @@ class RolloutManager:
 
     def _inject_engine_crash(self, *, engine_index: int) -> None:
         engines = self._server.server_groups[0].all_engines if self._server else []
-        if not (len(engines) > engine_index and engines[engine_index].is_allocated):
+        if len(engines) <= engine_index or not engines[engine_index].is_allocated:
             logger.warning(f"CI Fault Injection: engine {engine_index} not available; skip kill")
             return
 

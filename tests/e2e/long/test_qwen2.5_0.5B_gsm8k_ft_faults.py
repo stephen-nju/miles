@@ -24,10 +24,10 @@ NUM_GPUS = 2
 NUM_ENGINES = 2  # colocate, --rollout-num-gpus-per-engine 1
 
 # Override knobs for smoke/calibration runs; CI uses the defaults.
-NUM_ROLLOUT = int(os.environ.get("MILES_TEST_NUM_ROLLOUT", "250"))
+NUM_ROLLOUT = U.get_int_env_var("MILES_TEST_NUM_ROLLOUT", 250)
 # Provisional threshold pending calibration runs (baseline asserts 0.55 at 250
 # steps without faults); update after collecting the fault-run distribution.
-METRIC_THRESHOLD = float(os.environ.get("MILES_TEST_METRIC_THRESHOLD", "0.45"))
+METRIC_THRESHOLD = U.get_float_env_var("MILES_TEST_METRIC_THRESHOLD", 0.45)
 
 # The fault schedule is fully determined by this seed (and NUM_ROLLOUT), so a
 # red run can be replayed exactly; the generated JSON also appears verbatim in

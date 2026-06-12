@@ -2254,6 +2254,12 @@ def miles_validate_args(args):
         )
         args.debug_train_only = True
 
+    if args.ci_engine_kill_schedule is not None:
+        assert args.use_fault_tolerance and not args.debug_train_only, (
+            "--ci-engine-kill-schedule requires --use-fault-tolerance and real rollout engines "
+            "(the rollout health monitor performs the post-kill recovery)"
+        )
+
     args.use_critic = args.advantage_estimator == "ppo"
     if args.critic_num_gpus_per_node is None:
         args.critic_num_gpus_per_node = args.actor_num_gpus_per_node
