@@ -44,6 +44,7 @@ def make_args(**overrides: Any) -> Namespace:
         use_dynamic_global_batch_size=False,
         disable_rollout_trim_samples=False,
         balance_data=False,
+        delay_split_train_data_by_dp=False,
         # advantage / reward
         advantage_estimator="grpo",
         rewards_normalization=True,
