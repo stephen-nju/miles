@@ -614,6 +614,9 @@ class MegatronTrainRayActor(TrainRayActor):
                 destroy_process_groups()
             return
 
+        if dist.get_rank() == 0:
+            ray.get(self.rollout_manager.health_monitoring_pause.remote())
+
         with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
             print_memory("before update_weights")
             self.weight_updater.update_weights()
