@@ -180,9 +180,21 @@ def run_training(
     *,
     dump_dir: str | None = None,
     extra_env_vars: dict[str, str] | None = None,
+    seed_events_from: str | None = None,
 ) -> None:
+    """Run one training invocation.
+
+    ``seed_events_from`` pre-populates ``{dump_dir}/events`` with a previous phase's event
+    files before the run appends to them, mirroring a production resume where the run
+    keeps writing into the same event directory: the event analyzer then sees the full
+    history across the save/load boundary, exactly as if the run had never stopped.
+    """
     if dump_dir is not None and os.path.exists(dump_dir):
         shutil.rmtree(dump_dir)
+    if seed_events_from is not None:
+        assert dump_dir is not None
+        assert os.path.isdir(seed_events_from), f"seed events dir does not exist: {seed_events_from}"
+        shutil.copytree(seed_events_from, os.path.join(dump_dir, "events"))
     merged_env_vars = {
         **_DETERMINISTIC_ENV_VARS,
         **_TRAINER_FT_ENV_VARS,

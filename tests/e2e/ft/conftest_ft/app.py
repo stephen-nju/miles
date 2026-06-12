@@ -26,6 +26,24 @@ def _dump_subdir(side: str, phase: str) -> str:
     return f"{side}/{phase}" if phase else side
 
 
+def _seed_events_dir(*, dump_dir: str, side: str, phase: str, phases: list[str] | None) -> str | None:
+    """Previous phase's events dir for multi-phase scenarios (resume chain), else None.
+
+    A later phase resumes from the previous phase's checkpoint, so it must also inherit
+    the previous phase's event files: in production a resumed run appends to the same
+    event directory, and the event analyzer needs that full history to behave exactly as
+    in a never-interrupted run.
+    """
+    if not phases or not phase:
+        return None
+
+    phase_index = phases.index(phase)
+    if phase_index == 0:
+        return None
+
+    return f"{dump_dir}/{_dump_subdir(side, phases[phase_index - 1])}/events"
+
+
 def run_pipeline(
     *,
     test_name: str,
@@ -50,6 +68,7 @@ def run_pipeline(
             train_args=build_baseline_args(ft_mode, baseline_dump, enable_dumper),
             mode=ft_mode,
             dump_dir=baseline_dump,
+            seed_events_from=_seed_events_dir(dump_dir=dump_dir, side="baseline", phase=phase, phases=phases),
         )
 
         target_dump = f"{dump_dir}/{_dump_subdir('target', phase)}"
@@ -57,6 +76,7 @@ def run_pipeline(
             train_args=build_target_args(ft_mode, target_dump, enable_dumper),
             mode=ft_mode,
             dump_dir=target_dump,
+            seed_events_from=_seed_events_dir(dump_dir=dump_dir, side="target", phase=phase, phases=phases),
         )
 
     if enable_dumper:
@@ -98,7 +118,12 @@ def create_comparison_app_and_run_ci(
         full_dump_dir = f"{dump_dir}/{sub}"
         args = build_fn(ft_mode, full_dump_dir, enable_dumper)
         prepare(ft_mode)
-        run_training(train_args=args, mode=ft_mode, dump_dir=full_dump_dir)
+        run_training(
+            train_args=args,
+            mode=ft_mode,
+            dump_dir=full_dump_dir,
+            seed_events_from=_seed_events_dir(dump_dir=dump_dir, side=side, phase=phase, phases=phases),
+        )
 
     @app.command()
     def baseline(
