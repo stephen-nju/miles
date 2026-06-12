@@ -1532,6 +1532,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "cell_index -1 means last cell.",
             )
             parser.add_argument(
+                "--ci-engine-kill-schedule",
+                type=str,
+                default=None,
+                help="CI-only. JSON array of rollout engine crash injections. Each entry: "
+                '{"at_rollout": N, "engine_index": I}. '
+                "When set, replaces the legacy one-shot engine crash injection of --ci-test.",
+            )
+            parser.add_argument(
                 "--env-report",
                 type=str,
                 default=os.environ.get("MILES_SCRIPT_ENV_REPORT", ""),

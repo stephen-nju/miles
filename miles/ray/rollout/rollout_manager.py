@@ -31,6 +31,7 @@ from miles.utils.metric_checker import MetricChecker
 from miles.utils.misc import load_function
 from miles.utils.process_identity import RolloutManagerProcessIdentity
 from miles.utils.ray_utils import Box
+from miles.utils.test_utils.engine_kill_schedule import EngineKillScheduleExecutor
 from miles.utils.tracking_utils import init_tracking
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -83,6 +84,7 @@ class RolloutManager:
         self.rollout_id = -1
 
         self._metric_checker = MetricChecker.maybe_create(args)
+        self._engine_kill_schedule = EngineKillScheduleExecutor.from_args(args)
 
         # TODO will be replaced by full ft, thus temporarily leave it without modifications
         self._health_monitors = []
@@ -110,7 +112,10 @@ class RolloutManager:
         start_time = time.time()
         self.rollout_id = rollout_id
         self._health_monitoring_resume()
-        if self.args.ci_test and self.args.use_fault_tolerance and rollout_id >= 2:
+        if self._engine_kill_schedule.enabled:
+            for action in self._engine_kill_schedule.actions_at(rollout_id):
+                self._inject_engine_crash(engine_index=action.engine_index)
+        elif self.args.ci_test and self.args.use_fault_tolerance and rollout_id >= 2:
             self._try_ci_fault_injection()
         data, metadata, metrics = await self._get_rollout_data(rollout_id=rollout_id)
         save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=False)
@@ -305,22 +310,25 @@ class RolloutManager:
         # Only inject fault once
         self._ci_fault_injection_pending = False
 
-        if (
-            self._server
-            and self._server.server_groups[0].all_engines
-            and self._server.server_groups[0].all_engines[0].is_allocated
-        ):
-            logger.info("CI Fault Injection: Simulating crash on engine 0 during generate")
-            try:
-                # This will cause the ray actor to exit
-                self._server.server_groups[0].all_engines[0].actor_handle.simulate_crash.remote()
-                # Wait for health monitor to detect the crash and mark engine as None
-                # health_check_interval + health_check_timeout + buffer
-                wait_time = self.args.rollout_health_check_interval + self.args.rollout_health_check_timeout + 5
-                logger.info(f"CI Fault Injection: Waiting {wait_time}s for health monitor to detect crash")
-                time.sleep(wait_time)
-            except Exception as e:
-                logger.warning(f"CI Fault Injection failed: {e}")
+        self._inject_engine_crash(engine_index=0)
+
+    def _inject_engine_crash(self, *, engine_index: int) -> None:
+        engines = self._server.server_groups[0].all_engines if self._server else []
+        if not (len(engines) > engine_index and engines[engine_index].is_allocated):
+            logger.warning(f"CI Fault Injection: engine {engine_index} not available; skip kill")
+            return
+
+        logger.info(f"CI Fault Injection: Simulating crash on engine {engine_index} during generate")
+        try:
+            # This will cause the ray actor to exit
+            engines[engine_index].actor_handle.simulate_crash.remote()
+            # Wait for health monitor to detect the crash and mark engine as None
+            # health_check_interval + health_check_timeout + buffer
+            wait_time = self.args.rollout_health_check_interval + self.args.rollout_health_check_timeout + 5
+            logger.info(f"CI Fault Injection: Waiting {wait_time}s for health monitor to detect crash")
+            time.sleep(wait_time)
+        except Exception as e:
+            logger.warning(f"CI Fault Injection failed: {e}", exc_info=True)
 
 
 @dataclass(frozen=True)
