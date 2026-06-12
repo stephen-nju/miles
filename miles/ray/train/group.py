@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from pathlib import Path
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
@@ -21,7 +22,7 @@ from miles.utils.indep_dp import IndepDPInfo
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.retry_utils import retry
 from miles.utils.test_utils.ft_test_actions import FTTestActionGroupExecutor
-from miles.utils.witness.allocator import WitnessIdAllocator
+from miles.utils.witness.allocator import WitnessIdAllocator, read_persisted_witness_counter
 
 if TYPE_CHECKING:
     import torch
@@ -115,7 +116,8 @@ class RayTrainGroup:
         self._witness_allocator: WitnessIdAllocator | None = (
             WitnessIdAllocator(buffer_size=args.witness_buffer_size) if args.enable_witness else None
         )
-        self._witness_allocator_resumed = False
+        if self._witness_allocator is not None and args.save_debug_event_data is not None:
+            self._witness_allocator.resume(read_persisted_witness_counter(Path(args.save_debug_event_data)))
 
         self._test_action_executor = FTTestActionGroupExecutor.from_args(args, group=self)
 
@@ -125,7 +127,6 @@ class RayTrainGroup:
         """Do one rollout training"""
 
         run_analysis_from_args(self.args)
-        await self._maybe_resume_witness_allocator()
 
         async def _fn(attempt: int):
             witness_info = self._allocate_witness_info(
@@ -154,20 +155,6 @@ class RayTrainGroup:
 
         self._test_action_executor.run_after_step(rollout_id=rollout_id)
 
-    async def _maybe_resume_witness_allocator(self) -> None:
-        """Continue id allocation from the loaded checkpoint's counter.
-
-        Aligns a resumed run with a never-interrupted one: rows of previously allocated
-        ids still hold the saved run's witness state, so re-issuing those ids would let a
-        new sample read as "present" without ever receiving gradient.
-        """
-        if self._witness_allocator is None or self._witness_allocator_resumed:
-            return
-
-        counters = await self._execute_first_alive("get_witness_allocation_counter")
-        self._witness_allocator.resume(max(counters))
-        self._witness_allocator_resumed = True
-
     def _allocate_witness_info(self, *, rollout_id: int, attempt: int, sample_indices):
         if self._witness_allocator is None:
             return None
@@ -181,6 +168,7 @@ class RayTrainGroup:
                     rollout_id=rollout_id,
                     attempt=attempt,
                     witness_id_to_sample_index=dict(zip(witness_info.witness_ids, sample_indices, strict=True)),
+                    counter_after=self._witness_allocator.counter,
                 ),
             )
 

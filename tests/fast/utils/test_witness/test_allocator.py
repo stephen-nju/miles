@@ -1,8 +1,15 @@
 """Tests for miles.utils.witness.allocator: WitnessIdAllocator, _compute_stale_ids."""
 
+import json
+
 import pytest
 
-from miles.utils.witness.allocator import WitnessIdAllocator, WitnessInfo, _compute_stale_ids
+from miles.utils.witness.allocator import (
+    WitnessIdAllocator,
+    WitnessInfo,
+    _compute_stale_ids,
+    read_persisted_witness_counter,
+)
 
 
 class TestWitnessIdAllocator:
@@ -139,15 +146,15 @@ class TestWitnessIdAllocatorResume:
     def test_resume_continues_allocation_without_reusing_ids(self) -> None:
         """Resuming from a persisted counter issues fresh ids, as if the run never stopped."""
         saved = WitnessIdAllocator(buffer_size=100)
-        saved_info = saved.allocate(10)
-        assert saved_info.counter == 10
+        saved.allocate(10)
+        assert saved.counter == 10
 
         resumed = WitnessIdAllocator(buffer_size=100)
-        resumed.resume(saved_info.counter)
+        resumed.resume(saved.counter)
         info = resumed.allocate(5)
 
         assert info.witness_ids == [10, 11, 12, 13, 14]
-        assert info.counter == 15
+        assert resumed.counter == 15
 
     def test_resume_with_smaller_counter_is_noop(self) -> None:
         """resume() never moves the counter backwards."""
@@ -166,7 +173,38 @@ class TestWitnessIdAllocatorResume:
         first = WitnessIdAllocator(buffer_size=7)
         actual = [first.allocate(3).witness_ids, first.allocate(3).witness_ids]
         second = WitnessIdAllocator(buffer_size=7)
-        second.resume(first.allocate(0).counter)
+        second.resume(first.counter)
         actual += [second.allocate(3).witness_ids, second.allocate(3).witness_ids]
 
         assert actual == expected
+
+
+class TestReadPersistedWitnessCounter:
+    def _write_events(self, event_dir, counters) -> None:
+        event_dir.mkdir(parents=True, exist_ok=True)
+        lines = []
+        for i, counter in enumerate(counters):
+            lines.append(
+                json.dumps(
+                    {
+                        "type": "witness_allocate_id",
+                        "timestamp": "2026-06-12T00:00:00Z",
+                        "source": {"component": "main"},
+                        "rollout_id": i,
+                        "attempt": 0,
+                        "witness_id_to_sample_index": {},
+                        "counter_after": counter,
+                    }
+                )
+            )
+        (event_dir / "main.jsonl").write_text("\n".join(lines) + "\n")
+
+    def test_reads_latest_counter_from_events(self, tmp_path) -> None:
+        """The max counter_after across allocate events is the resume point."""
+        self._write_events(tmp_path / "events", [3, 6, 9])
+
+        assert read_persisted_witness_counter(tmp_path / "events") == 9
+
+    def test_empty_or_missing_dir_resumes_from_zero(self, tmp_path) -> None:
+        """A fresh run (no events yet) starts allocation at zero."""
+        assert read_persisted_witness_counter(tmp_path / "missing") == 0

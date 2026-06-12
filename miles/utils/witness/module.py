@@ -40,9 +40,6 @@ def witness_dump_and_clear_stale(
     """Log nonzero witness param rows, then clear stale ring buffer entries."""
     pp_rank = get_parallel_state().pp.rank
 
-    for witness in _get_all_witnesses_in_model(model):
-        witness.allocation_counter.fill_(witness_info.counter)
-
     for chunk_index, chunk in enumerate(model):
         inner = _unwrap_to_witness_owner(chunk)
         for attr in _WITNESS_ATTRS:
@@ -56,10 +53,6 @@ def witness_dump_and_clear_stale(
 
     _clear_witness_stale_rows(model=model, stale_ids=witness_info.stale_ids, optimizer=optimizer)
 
-
-def read_witness_allocation_counter(model: Sequence[nn.Module]) -> int:
-    """Read the persisted allocator counter (see WitnessInfo.counter) from the model."""
-    return max(int(witness.allocation_counter.item()) for witness in _get_all_witnesses_in_model(model))
 
 
 # ---------------------------------------------------------------------------
@@ -80,9 +73,6 @@ class _DataWitness(nn.Module):
         self.witness = nn.Embedding(num_embeddings=buffer_size, embedding_dim=1)
         self.witness.weight._is_witness_param = True
         nn.init.zeros_(self.witness.weight)
-        # Allocator counter after the last committed step (see WitnessInfo.counter). Lives
-        # on the module so every checkpoint (disk resume and healing transfer) carries it.
-        self.register_buffer("allocation_counter", torch.zeros(1, dtype=torch.int64))
 
     def forward(self, witness_ids: Tensor, hidden_states: Tensor) -> Tensor:
         w = self.witness(witness_ids)  # [b, s, 1]

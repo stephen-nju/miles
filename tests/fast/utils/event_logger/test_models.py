@@ -27,6 +27,7 @@ class TestEventModelsDiscriminatedUnion:
             rollout_id=0,
             attempt=0,
             witness_id_to_sample_index={10: 0, 11: 1},
+            counter_after=12,
         )
         parsed = _event_adapter.validate_json(event.model_dump_json())
         assert isinstance(parsed, WitnessAllocateIdEvent)
@@ -34,7 +35,12 @@ class TestEventModelsDiscriminatedUnion:
 
     def test_discriminator_distinguishes_types(self) -> None:
         e1 = WitnessAllocateIdEvent(
-            timestamp=_FIXED_TS, source=_FIXED_SOURCE, rollout_id=0, attempt=0, witness_id_to_sample_index={0: 0}
+            timestamp=_FIXED_TS,
+            source=_FIXED_SOURCE,
+            rollout_id=0,
+            attempt=0,
+            witness_id_to_sample_index={0: 0},
+            counter_after=1,
         )
         e2 = TrainGroupStepEndEvent(
             timestamp=_FIXED_TS,
@@ -70,6 +76,7 @@ class TestWitnessAllocateIdEvent:
             rollout_id=2,
             attempt=0,
             witness_id_to_sample_index={10: 0, 11: 1},
+            counter_after=12,
         )
         parsed = _event_adapter.validate_json(event.model_dump_json())
         assert isinstance(parsed, WitnessAllocateIdEvent)
@@ -113,7 +120,12 @@ class TestDiscriminatedUnionParsesAllEvents:
     def test_all_event_types_parse(self) -> None:
         events = [
             WitnessAllocateIdEvent(
-                timestamp=_FIXED_TS, source=_FIXED_SOURCE, rollout_id=0, attempt=0, witness_id_to_sample_index={0: 0}
+                timestamp=_FIXED_TS,
+                source=_FIXED_SOURCE,
+                rollout_id=0,
+                attempt=0,
+                witness_id_to_sample_index={0: 0},
+                counter_after=1,
             ),
             TrainGroupStepEndEvent(
                 timestamp=_FIXED_TS,

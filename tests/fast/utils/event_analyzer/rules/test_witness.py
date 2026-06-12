@@ -56,6 +56,7 @@ def _make_allocate(
         rollout_id=rollout_id,
         attempt=attempt,
         witness_id_to_sample_index=witness_id_to_sample_index,
+        counter_after=max(witness_id_to_sample_index.keys(), default=-1) + 1,
     )
 
 
