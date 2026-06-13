@@ -1,7 +1,5 @@
 import logging
 import math
-import subprocess
-import sys
 from pathlib import Path
 
 from miles.utils.event_logger.logger import read_events
@@ -10,70 +8,6 @@ from miles.utils.event_logger.models import MetricEvent
 logger = logging.getLogger(__name__)
 
 _REQUIRED_METRIC_KEYS: list[str] = ["train/grad_norm", "train/loss"]
-
-# Shared regexes for model-input / metadata tensors that are not weights or grads to
-# compare. Exposed as named constants (not as defaults) so each test passes them
-# explicitly -- every pass/fail knob is visible at the call site, nothing is implicit.
-INPUT_TENSORS_SKIP_PATTERN: str = "input_ids|positions|cu_seqlens_q|cu_seqlens_kv|qkv_format|.*witness.*"
-INPUT_TENSORS_ALLOW_FAILED_PATTERN: str = "input_ids|positions|cu_seqlens_q|cu_seqlens_kv|qkv_format"
-
-
-def compare_dumps(
-    baseline_dir: str,
-    target_dir: str,
-    *,
-    diff_thresholds: list[tuple[str, str]],
-    allow_skipped_pattern: str,
-    allow_failed_pattern: str,
-    phase_subdir: str | None = None,
-    grouping_skip_keys: list[str] | None = None,
-    extra_args: list[str] | None = None,
-) -> None:
-    subdir = phase_subdir or ""
-    baseline_root = Path(baseline_dir) / "dumps" / subdir
-    target_root = Path(target_dir) / "dumps" / subdir
-
-    assert baseline_root.exists(), f"Baseline dump dir does not exist: {baseline_root}"
-    assert target_root.exists(), f"Target dump dir does not exist: {target_root}"
-
-    # Dumps are segmented into leaf dirs (e.g. fwd_bwd/rollout_<id>), each a flat set of
-    # .pt files with its own per-leaf step numbering. The sglang comparator compares one
-    # flat dir at a time, so compare each matching leaf pair independently.
-    baseline_leaves = _find_leaf_dump_dirs(baseline_root)
-    target_leaves = _find_leaf_dump_dirs(target_root)
-
-    assert baseline_leaves, f"No .pt dump files found under {baseline_root}"
-    assert baseline_leaves == target_leaves, (
-        f"Dump leaf-dir mismatch: baseline={baseline_leaves} vs target={target_leaves} "
-        f"(under {baseline_root} vs {target_root})"
-    )
-
-    failed_leaves: list[str] = []
-    for leaf in baseline_leaves:
-        result = _run_comparator(
-            baseline_path=baseline_root / leaf,
-            target_path=target_root / leaf,
-            diff_thresholds=diff_thresholds,
-            allow_skipped_pattern=allow_skipped_pattern,
-            allow_failed_pattern=allow_failed_pattern,
-            grouping_skip_keys=grouping_skip_keys,
-            extra_args=extra_args,
-        )
-        if result.returncode != 0:
-            failed_leaves.append(leaf)
-
-    assert not failed_leaves, (
-        f"Dump comparator failed (rc!=0) for {len(failed_leaves)}/{len(baseline_leaves)} leaf dir(s): "
-        f"{failed_leaves} (baseline {baseline_root} vs target {target_root}). The comparator applies the "
-        f"per-tensor predicates ({diff_thresholds}) and the allow/skip patterns itself; see "
-        f"comparator_report.jsonl under {target_root}/<leaf> for the offending tensors."
-    )
-    print(f"Dump comparison passed: {len(baseline_leaves)} leaf dir(s) under {baseline_root} vs {target_root}")
-
-
-def _find_leaf_dump_dirs(root: Path) -> list[str]:
-    leaves: set[str] = {str(p.parent.relative_to(root)) for p in root.rglob("*.pt")}
-    return sorted(leaves)
 
 
 def compare_metrics(
@@ -261,57 +195,6 @@ def _check_required_keys_exist(events: list[MetricEvent]) -> list[str]:
                 f"Available keys: {sorted(all_keys)}"
             )
     return issues
-
-
-def _run_comparator(
-    *,
-    baseline_path: Path,
-    target_path: Path,
-    diff_thresholds: list[tuple[str, str]],
-    allow_skipped_pattern: str,
-    allow_failed_pattern: str,
-    grouping_skip_keys: list[str] | None = None,
-    extra_args: list[str] | None,
-) -> subprocess.CompletedProcess[str]:
-    # Skip 'rank' when grouping bundles: under FT (target) and non-FT (baseline) the same
-    # logical (pp_rank, cp_rank, ep_rank, tp_rank) coordinate maps to a different absolute
-    # rank ID (e.g. baseline rank=4 vs target cell0 rank=2 for PP=1, CP=0). Without skipping
-    # 'rank' the comparator gets `baseline_load_failed` for every tensor and fails with rc=1.
-    # Callers may pass extra keys (e.g. no_failure skips 'dp'/'edp' too). (Grouping is a
-    # comparator-matching detail, not a pass/fail threshold.)
-    skip_keys: list[str] = list(grouping_skip_keys) if grouping_skip_keys is not None else ["rank"]
-
-    cmd: list[str] = [
-        sys.executable,
-        "-m",
-        "sglang.srt.debug_utils.comparator",
-        "--baseline-path",
-        str(baseline_path),
-        "--target-path",
-        str(target_path),
-        "--output-format",
-        "json",
-        "--grouping-skip-keys",
-        *skip_keys,
-        "--allow-skipped-pattern",
-        allow_skipped_pattern,
-        "--allow-failed-pattern",
-        allow_failed_pattern,
-    ]
-    if extra_args:
-        cmd.extend(extra_args)
-    # Keep --diff-threshold strictly last: its nargs="*" greedily consumes every
-    # following token, so no flag with a bare value may come after it.
-    cmd.append("--diff-threshold")
-    for pattern, predicate in diff_thresholds:
-        cmd.extend([pattern, predicate])
-
-    result: subprocess.CompletedProcess[str] = subprocess.run(
-        cmd,
-        text=True,
-    )
-
-    return result
 
 
 def _read_metric_events(dump_dir: Path) -> list[MetricEvent]:
