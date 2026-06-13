@@ -16,14 +16,14 @@ from miles.utils.test_utils.comparisons import (
 )
 from miles.utils.test_utils.reconfigure_assertions import ReconfigureInfo, assert_reconfigure_events
 
-# --num-rollout is the exclusive global end id (TOTAL_NUM_ROLLOUTS), not a per-run count; --debug-exit-after-rollout counts rollouts in the current run.
+# --num-rollout is the exclusive global end id (TOTAL_NUM_ROLLOUTS); --debug-exit-after-rollout counts rollouts within the current run.
 NUM_ROLLOUTS_PER_PHASE: int = 3
 TOTAL_NUM_ROLLOUTS: int = 2 * NUM_ROLLOUTS_PER_PHASE
 PHASE_START_ROLLOUT_IDS: dict[str, int] = {"phase_a": 0, "phase_b": NUM_ROLLOUTS_PER_PHASE}
 
 _FAULT_OFFSET_IN_PHASE: int = 1
 
-# Fault-inherent ulp drift persists from the phase_a fault through the ckpt into all of phase_b, so post-fault starts the rollout after the fault.
+# The phase_a fault's ulp drift persists through the ckpt into all of phase_b, so post-fault begins one rollout after the fault.
 _FIRST_POST_FAULT_ROLLOUT_ID: int = PHASE_START_ROLLOUT_IDS["phase_a"] + _FAULT_OFFSET_IN_PHASE + 1
 
 # Per-tensor pass predicates. A few specific near-zero grads diverge under the
@@ -76,10 +76,8 @@ def _build_actions(phase_start_rollout_id: int) -> list[dict]:
 
 
 def _expected_reconfigures(*, is_target: bool, phase: str, num_cells: int) -> list[ReconfigureInfo]:
-    # Phase-unify runs the same fault timeline in every phase, so each target phase emits a
-    # full shrink+heal pair; baseline phases emit none. The shrink lands on the fault rollout
-    # (phase_start + _FAULT_OFFSET_IN_PHASE) and the healing on the rollout after the
-    # stop/start that fires at the end of it. rollout_id here is the global train-loop id.
+    # Every target phase runs the fault timeline, so each emits a shrink+heal pair; baseline
+    # phases emit none. Shrink lands on the fault rollout, heal on the next. Global rollout_id.
     if not is_target:
         return []
     phase_start_rollout_id: int = PHASE_START_ROLLOUT_IDS[phase]

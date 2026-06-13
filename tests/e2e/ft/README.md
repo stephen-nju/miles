@@ -157,14 +157,13 @@ both start regimes: cold start (phase_a) and resume from a post-FT checkpoint (p
 Type: comparison, multi-phase (phase_a + phase_b)
 One shared builder parameterized by the phase's start rollout id P emits both phases: 3
 rollouts, the same relative fault timeline, ckpt saved only at the phase's last rollout
-(--save-interval 3 = NUM_ROLLOUTS_PER_PHASE — phase_a's rollout 2, the post-healing ckpt
-phase_b resumes from). Only the start regime differs:
+(--save-interval 3 = NUM_ROLLOUTS_PER_PHASE). Only the start regime differs:
   phase_a: cold start (no --load, start_rollout_id=0) — rollouts 0..2 (P=0)
-  phase_b: resumes from phase_a's last (rollout-2) ckpt
+  phase_b: resumes from phase_a's last (rollout-2, post-healing) ckpt
            (start_rollout_id = loaded + 1 = 3) — rollouts 3..5 (P=3)
---num-rollout is 6 for both phases (exclusive end rollout id, not a per-run count); each
-phase stops after its 3 rollouts via --debug-exit-after-rollout 3, which counts rollouts
-executed within the run and fires after that rollout's ckpt save.
+--num-rollout is 6 (exclusive end rollout id, not a per-run count); each phase stops after
+3 rollouts via --debug-exit-after-rollout 3, which counts rollouts within the run and fires
+after that rollout's ckpt save.
 
 Per-phase timeline — baseline:
   1. Rollouts P..P+2: normal steps (ckpt saved at the last rollout)
@@ -176,8 +175,8 @@ Per-phase timeline — target:
   3. Rollout P+1, attempt 1: _refresh_cells() reconfigure → N-1 cells → commit
   4. After rollout P+1: stop_cell_at_end(last) + start_cell_at_end(last)
   5. Rollout P+2: _refresh_cells() healing → N cells, trains with the healed cell
-  Saving only at the last rollout means phase_a's saved ckpt is the P+2 post-healing one,
-  so phase_b's resume exercises a post-FT checkpoint.
+  phase_a's only saved ckpt is thus the P+2 post-healing one, so phase_b resumes from a
+  post-FT checkpoint.
 
 Compare: BOTH phases' dumps per rollout (rel <= 0.0085; MoE expert grads and QK-norm grads
 also tolerate max_abs <= 1e-3; in the real_rollout mode every rollout from the first
@@ -185,14 +184,12 @@ post-fault one (rollout 2) onward — including all of phase_b, whose target res
 drift-carrying ckpt — tolerates max_abs <= 3e-3 on the measured grad families, see the
 dense-mode section below) and metrics (rtol=5e-2).
 
-Healing witness: each target phase runs the same fault timeline, so each target event dir
-must contain exactly two CellReconfigureEvents, in order — a shrink at rollout P+1 (alive
-N -> N-1, positive proof the fault injection fired) and a healing at rollout P+2 (healed =
-last cell, ckpt src = cell 0, alive back to N). Concretely the global rollout ids are
-phase_a: shrink at 1, heal at 2; phase_b: shrink at 4, heal at 5. Both baseline event dirs
-must contain zero reconfigure events. This positively proves the crash -> shrink -> heal
-path executed in every phase; without it the comparison could silently degenerate to
-fault-free runs.
+Healing witness: each target phase runs the fault timeline, so each target event dir must
+contain exactly two CellReconfigureEvents, in order — a shrink at rollout P+1 (alive
+N -> N-1, proof the fault injection fired) and a healing at rollout P+2 (healed = last cell,
+ckpt src = cell 0, alive back to N). Global ids: phase_a shrink 1 / heal 2; phase_b shrink
+4 / heal 5. Both baseline event dirs must contain zero reconfigure events. Without this the
+comparison could silently degenerate to fault-free runs.
 
 Fault injection via --ci-ft-test-actions JSON (data-driven, executed by RayTrainGroup).
 The JSON `at_rollout` field specifies which rollout_id triggers the action.
@@ -206,8 +203,7 @@ the same phase's baseline `--save-debug-rollout-data` output; both sides record 
 phase). The injection start id is `max(phase start, first post-fault rollout id)` per
 phase: phase_a injects from rollout 2 (right after its fault); phase_b injects from rollout
 3 — all of its rollouts — because the target resumes from phase_a's drift-carrying ckpt, so
-every phase_b rollout generates on drifted weights (including its own crash rollout 4,
-whose injected data is redriven by the retry).
+every phase_b rollout generates on drifted weights.
 Rationale: the post-crash degraded-quorum commit accumulates microbatches in a different
 floating-point bracketing than the fault-free side — a fault-inherent ulp-level weight
 difference no collective ordering removes. Under live sampling that drift flips individual
@@ -221,11 +217,10 @@ What stays real on the target during injected rollouts: engines and generation i
 generated samples are discarded after the fact), update_weights after the degraded commit
 and after healing, and health-monitor pause/resume — i.e. the whole
 crash→retry→heal→weight-sync path. Known gap: the update_weights after each phase's
-post-healing train step (rollouts 2 and 5, the last rollout of each phase) runs but its
-output is consumed by no later rollout in that run (phase_b restarts from the checkpoint),
-so a regression there is only caught by the generation match guard at the injected rollouts
-(post-degraded-commit / post-resume weights) and by `realistic_gsm8k` accuracy, not by this
-scenario's strict comparison. Injected rollouts' dump comparison gives a
+post-healing train step (rollouts 2 and 5) runs but its output is consumed by no later
+rollout in that run (phase_b restarts from the checkpoint), so a regression there is only
+caught by the generation match guard at the injected rollouts and by `realistic_gsm8k`
+accuracy, not by this scenario's strict comparison. Injected rollouts' dump comparison gives a
 `max_abs <= 3e-3` floor to the **measured noisy grad families only** (decoder-layer
 QK-norms, folded `layer_norm_weight`s, and the attention/MLP weight matrices): the
 training data is bitwise-identical, but the target's weights carry the fault-inherent ulp
@@ -275,14 +270,13 @@ both start regimes: cold start (phase_a) and resume from a post-healing checkpoi
 Type: comparison, multi-phase (phase_a + phase_b)
 One shared builder parameterized by the phase's start rollout id P emits both phases: 3
 rollouts, stop/start healing at the same relative offset, ckpt saved only at the phase's
-last rollout (--save-interval 3 = NUM_ROLLOUTS_PER_PHASE, so phase_a's rollout 2 is the one
-phase_b resumes from). Only the start regime differs:
+last rollout (--save-interval 3 = NUM_ROLLOUTS_PER_PHASE). Only the start regime differs:
   phase_a: cold start (no --load, start_rollout_id=0) — rollouts 0..2 (P=0)
   phase_b: resumes from phase_a's last (rollout-2, post-healing) ckpt
            (start_rollout_id = loaded + 1 = 3) — rollouts 3..5 (P=3)
---num-rollout is 6 for both phases (exclusive end rollout id, not a per-run count); each
-phase stops after its 3 rollouts via --debug-exit-after-rollout 3, which counts rollouts
-executed within the run and fires after that rollout's ckpt save.
+--num-rollout is 6 (exclusive end rollout id, not a per-run count); each phase stops after
+3 rollouts via --debug-exit-after-rollout 3, which counts rollouts within the run and fires
+after that rollout's ckpt save.
 Comparison: BOTH phases' dumps rel <= 0 (bitwise), metrics rtol=0 / atol=0 (exact)
 
 Per-phase baseline timeline: rollouts P..P+2 all normal (normal DP, no stop/start, no
@@ -295,9 +289,8 @@ Per-phase target timeline:
      (P+2 must exist, otherwise healing never executes)
 
 phase_a exercises healing on a cold-started run (no --load sets
-no_load_optim/no_load_rng/finetune); phase_b exercises it after checkpoint resume and —
-since it must reproduce the baseline bit-for-bit — also proves phase_a's post-healing
-checkpoint round-trips bitwise.
+no_load_optim/no_load_rng/finetune); phase_b exercises it after resume and — reproducing
+the baseline bit-for-bit — also proves phase_a's post-healing ckpt round-trips bitwise.
 
 Both baseline and target use --deterministic-mode + env vars (NCCL_ALGO=Ring,
 NVTE_ALLOW_NONDETERMINISTIC_ALGO=0, CUBLAS_WORKSPACE_CONFIG=:4096:8) for kernel
@@ -314,10 +307,10 @@ cross_replica_weight_checksum rule checks cell-to-cell bitwise equality after he
 Healing witness: each target phase heals once, so each target event dir must contain
 exactly one CellReconfigureEvent — a healing at rollout P+2 (healed = last cell, ckpt src =
 cell 0, alive back to N; the stop+start pair is absorbed by a single _refresh_cells, so
-there is no standalone shrink). Concretely the global rollout ids are phase_a: heal at 2;
-phase_b: heal at 5. Both baseline event dirs must contain zero reconfigure events. This is
-the regression gate for the off-by-one class of bugs where healing silently never runs and
-the comparison passes on fault-free runs.
+there is no standalone shrink). Global ids: phase_a heal 2; phase_b heal 5. Both baseline
+event dirs must contain zero reconfigure events. This is the regression gate for the
+off-by-one class of bugs where healing silently never runs and the comparison passes on
+fault-free runs.
 ```
 
 ### `scenario_ft_random`

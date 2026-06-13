@@ -16,7 +16,7 @@ from miles.utils.test_utils.comparisons import (
 )
 from miles.utils.test_utils.reconfigure_assertions import ReconfigureInfo, assert_reconfigure_events
 
-# --num-rollout is the exclusive global end id (TOTAL_NUM_ROLLOUTS), not a per-run count; --debug-exit-after-rollout counts rollouts in the current run.
+# --num-rollout is the exclusive global end id (TOTAL_NUM_ROLLOUTS); --debug-exit-after-rollout counts rollouts within the current run.
 NUM_ROLLOUTS_PER_PHASE: int = 3
 TOTAL_NUM_ROLLOUTS: int = 2 * NUM_ROLLOUTS_PER_PHASE
 PHASE_START_ROLLOUT_IDS: dict[str, int] = {"phase_a": 0, "phase_b": NUM_ROLLOUTS_PER_PHASE}
@@ -37,11 +37,9 @@ def _build_actions(phase_start_rollout_id: int) -> list[dict]:
 
 
 def _expected_reconfigures(*, is_target: bool, phase: str, num_cells: int) -> list[ReconfigureInfo]:
-    # Phase-unify heals in every phase, so each target phase emits exactly one healing
-    # reconfigure; baseline phases emit none. The stop/start pair fires at the end of
-    # phase_start + 1 and a single _refresh_cells absorbs it at the start of the next
-    # rollout, so the healing lands at phase_start + 2 (no standalone shrink in this
-    # scenario). rollout_id here is the global train-loop id.
+    # Every target phase heals once; baseline phases emit none. The stop/start pair fires at
+    # the end of phase_start + 1 and a single _refresh_cells absorbs it on the next rollout,
+    # so the heal lands at phase_start + 2 (no standalone shrink). Global rollout_id.
     if not is_target:
         return []
     healing_rollout_id: int = PHASE_START_ROLLOUT_IDS[phase] + 2
