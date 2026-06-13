@@ -31,11 +31,16 @@ NUM_ROLLOUTS_PER_PHASE: int = 3
 TOTAL_NUM_ROLLOUTS: int = 2 * NUM_ROLLOUTS_PER_PHASE
 PHASE_START_ROLLOUT_IDS: dict[str, int] = {"phase_a": 0, "phase_b": NUM_ROLLOUTS_PER_PHASE}
 
+# The injected fault hits each phase's second rollout (phase start + this offset). Every
+# fault-relative rollout id below derives from this single offset.
+_FAULT_OFFSET_IN_PHASE: int = 1
+
 # First rollout id whose target-side state carries the fault-inherent ulp drift of a
-# degraded-quorum commit: the phase_a fault hits rollout 1 (= phase_a start + 1), so the
-# target's weights drift from rollout 2 onward, and that drift persists into phase_b
-# through the ckpt (phase_b resumes from the drift-carrying phase_a ckpt).
-_FIRST_POST_FAULT_ROLLOUT_ID: int = PHASE_START_ROLLOUT_IDS["phase_a"] + 2
+# degraded-quorum commit: the phase_a fault hits rollout 1 (= phase_a start + the fault
+# offset), so the target's weights drift from the next rollout onward, and that drift
+# persists into phase_b through the ckpt (phase_b resumes from the drift-carrying phase_a
+# ckpt).
+_FIRST_POST_FAULT_ROLLOUT_ID: int = PHASE_START_ROLLOUT_IDS["phase_a"] + _FAULT_OFFSET_IN_PHASE + 1
 
 # Per-tensor pass predicates. A few specific near-zero grads diverge under the
 # crash-recovery (solo / degraded-quorum) collective's reduction order while their
@@ -75,7 +80,7 @@ def _build_actions(phase_start_rollout_id: int) -> list[dict]:
     # The fault hits the phase's second rollout: crash at attempt 0 -> degraded-quorum
     # commit at attempt 1, then stop/start at the end of that rollout so healing executes
     # at the start of the phase's third (last) rollout, which trains with the healed cell.
-    fault_rollout_id: int = phase_start_rollout_id + 1
+    fault_rollout_id: int = phase_start_rollout_id + _FAULT_OFFSET_IN_PHASE
     return [
         {
             "at_rollout": fault_rollout_id,
