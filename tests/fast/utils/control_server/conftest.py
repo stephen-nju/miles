@@ -6,8 +6,10 @@ import httpx
 import pytest
 
 from miles.utils.control_server.models import Cell, CellCondition, CellMetadata, CellSpec, CellStatus
+from miles.utils.control_server.progress import TrainingProgress
 from miles.utils.control_server.registry import _CellRegistry
 from miles.utils.control_server.server import _create_control_app
+from miles.utils.test_utils.fault_injector import FailureMode
 
 
 class MockHandle:
@@ -35,6 +37,7 @@ class MockHandle:
         self._resume_error = resume_error
         self.suspend_calls: int = 0
         self.resume_calls: int = 0
+        self.inject_fault_calls: list[tuple[FailureMode, int]] = []
 
     @property
     def cell_index(self) -> int:
@@ -77,6 +80,9 @@ class MockHandle:
             {"type": "Allocated", "status": "True"},
             {"type": "Healthy", "status": "True"},
         ]
+
+    async def inject_fault(self, *, mode: FailureMode, sub_index: int) -> None:
+        self.inject_fault_calls.append((mode, sub_index))
 
 
 class MockRemoteCall:
@@ -147,15 +153,19 @@ class MockRayTrainCell:
         )
 
 
-def make_mock_group(cells: list[MockRayTrainCell], *, current_rollout_id: int | None = None) -> object:
+def make_mock_group(cells: list[MockRayTrainCell]) -> object:
     from miles.ray.train.group import RayTrainGroup
 
     group = object.__new__(RayTrainGroup)
     group._cells = cells
     group._indep_dp_quorum_id = 0
     group._alive_cell_ids = frozenset()
-    group.current_rollout_id = current_rollout_id
     return group
+
+
+# Large enough that the default progress (current_rollout_id=None) is never in
+# the cooldown tail, so generic endpoint tests are unaffected by the inject guard.
+DEFAULT_NUM_ROLLOUT: int = 1000
 
 
 @pytest.fixture
@@ -164,12 +174,12 @@ def registry() -> _CellRegistry:
 
 
 @pytest.fixture
-def actor_model() -> object:
-    return make_mock_group([])
+def progress() -> TrainingProgress:
+    return TrainingProgress()
 
 
 @pytest.fixture
-def async_client(registry: _CellRegistry, actor_model: object) -> httpx.AsyncClient:
-    app = _create_control_app(registry, actor_model)
+def async_client(registry: _CellRegistry, progress: TrainingProgress) -> httpx.AsyncClient:
+    app = _create_control_app(registry=registry, progress=progress, num_rollout=DEFAULT_NUM_ROLLOUT)
     transport = httpx.ASGITransport(app=app)
     return httpx.AsyncClient(transport=transport, base_url="http://test")
