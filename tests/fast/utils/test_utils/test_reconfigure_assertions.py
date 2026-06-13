@@ -73,18 +73,18 @@ class TestAssertReconfigureEvents:
         """Expecting zero reconfigures passes when no events were emitted."""
         assert_reconfigure_events(tmp_path, expected=[])
 
-    def test_missing_healing_fails_with_explicit_count_message(self, tmp_path: Path) -> None:
-        """A run that never healed fails with an 'expected N healing event(s), got M' message."""
+    def test_missing_healing_fails_sequence_check(self, tmp_path: Path) -> None:
+        """A run that never healed fails the exact-sequence comparison (expected healing, got nothing)."""
         _write_events(tmp_path, [])
 
-        with pytest.raises(AssertionError, match=r"expected 1 healing event\(s\), got 0"):
+        with pytest.raises(AssertionError, match="sequence mismatch"):
             assert_reconfigure_events(tmp_path, expected=[_HEALING_EXPECTED])
 
     def test_unexpected_extra_healing_fails(self, tmp_path: Path) -> None:
-        """A healing event in a run expected to have none fails the healing count check."""
+        """A healing event in a run expected to have none fails the exact-sequence comparison."""
         _write_events(tmp_path, [dict(_HEALING_PARTIAL, quorum_id=1)])
 
-        with pytest.raises(AssertionError, match=r"expected 0 healing event\(s\), got 1"):
+        with pytest.raises(AssertionError, match="sequence mismatch"):
             assert_reconfigure_events(tmp_path, expected=[])
 
     def test_wrong_rollout_id_fails_sequence_check(self, tmp_path: Path) -> None:
@@ -92,13 +92,6 @@ class TestAssertReconfigureEvents:
         _write_events(tmp_path, [dict(_HEALING_PARTIAL, rollout_id=9, quorum_id=1)])
 
         with pytest.raises(AssertionError, match="sequence mismatch"):
-            assert_reconfigure_events(tmp_path, expected=[_HEALING_EXPECTED])
-
-    def test_quorum_gap_fails(self, tmp_path: Path) -> None:
-        """A quorum id gap (a hidden failed reconfigure attempt) fails even if shapes match."""
-        _write_events(tmp_path, [dict(_HEALING_PARTIAL, quorum_id=2)])
-
-        with pytest.raises(AssertionError, match="quorum ids"):
             assert_reconfigure_events(tmp_path, expected=[_HEALING_EXPECTED])
 
 

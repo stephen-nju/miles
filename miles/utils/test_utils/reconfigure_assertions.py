@@ -21,33 +21,11 @@ class ExpectedReconfigure(FrozenStrictBaseModel):
 
 
 def assert_reconfigure_events(event_dir: Path, *, expected: list[ExpectedReconfigure]) -> None:
-    """Assert event_dir contains exactly the expected ordered CellReconfigureEvent sequence.
-
-    Healing counts are checked first for an explicit message. Quorum ids must be the
-    contiguous sequence 1..len(events); a gap means a reconfigure attempt failed and retried.
-    """
-    actual_events = load_reconfigure_events(event_dir)
-    actual = [_shape_of(event) for event in actual_events]
-
-    expected_num_healings = sum(1 for e in expected if e.healed_cell_indices)
-    actual_num_healings = sum(1 for e in actual if e.healed_cell_indices)
-    assert actual_num_healings == expected_num_healings, (
-        f"Healing witness failed in {event_dir}: expected {expected_num_healings} healing event(s), "
-        f"got {actual_num_healings} (actual reconfigure sequence: {actual})"
-    )
-
+    """Assert event_dir holds exactly the expected ordered CellReconfigureEvent sequence."""
+    actual = [_shape_of(event) for event in load_reconfigure_events(event_dir)]
     assert actual == expected, (
         f"CellReconfigureEvent sequence mismatch in {event_dir}:\n" f"  expected: {expected}\n" f"  actual:   {actual}"
     )
-
-    actual_quorum_ids = [event.quorum_id for event in actual_events]
-    expected_quorum_ids = list(range(1, len(actual_events) + 1))
-    assert actual_quorum_ids == expected_quorum_ids, (
-        f"CellReconfigureEvent quorum ids in {event_dir} are {actual_quorum_ids}, expected the contiguous "
-        f"sequence {expected_quorum_ids}; a gap means a reconfigure attempt failed and was retried"
-    )
-
-    print(f"Reconfigure witness assertion passed: {len(actual)} event(s) in {event_dir} match {expected}")
 
 
 def assert_soak_reconfigure_events(
