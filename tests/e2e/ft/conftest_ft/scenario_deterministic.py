@@ -14,6 +14,7 @@ from miles.utils.test_utils.comparisons import (
     compare_dumps,
     compare_metrics,
 )
+from miles.utils.test_utils.engine_checksums import compare_engine_checksum_dumps
 
 NUM_PHASE_A_STEPS: int = 1
 # --num-rollout value; phase_b resumes from the phase_a ckpt and executes rollouts
@@ -50,10 +51,21 @@ def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enabl
     else:
         phase_a_dir = dump_dir.replace("/phase_b", "/phase_a")
         base += f"--load {phase_a_dir}/ckpt "
+        base += _append_engine_checksum_args(mode, dump_dir)
         if is_target:
             base += f"--ci-ft-test-actions '{json.dumps(_DETERMINISTIC_ACTIONS)}' "
 
     return base
+
+
+def _append_engine_checksum_args(mode: FTTestMode, dump_dir: str) -> str:
+    # Engine weight checksum dumping (phase_b only, both sides): after every
+    # update_weights — including the post-healing one — each engine's weights are
+    # checksummed per tensor, so _compare_engine_checksums can prove the weight sync
+    # pushed bitwise-identical weights. Only modes with real engines can checksum.
+    if not mode.has_real_rollout:
+        return ""
+    return f"--ci-dump-engine-weight-checksums {dump_dir}/engine_checksums "
 
 
 def _build_baseline_args(mode: FTTestMode, dump_dir: str, enable_dumper: bool = True) -> str:
@@ -115,7 +127,22 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
         allow_skipped_pattern=INPUT_TENSORS_SKIP_PATTERN,
         allow_failed_pattern=INPUT_TENSORS_ALLOW_FAILED_PATTERN,
     )
+    _compare_engine_checksums(dump_dir, mode)
     print("Deterministic healing comparison test PASSED")
+
+
+def _compare_engine_checksums(dump_dir: str, mode: FTTestMode) -> None:
+    # Both sides train bitwise-identically (asserted above), so after every
+    # update_weights the engine weights must hash identically per tensor, zero
+    # tolerance. This is the assertion that closes the post-heal update_weights gap:
+    # a silent no-op, mis-mapped, partially-pushed, or corrupted weight sync flips a
+    # tensor's hash and fails with the rollout, engine, and tensor name.
+    if not mode.has_real_rollout:
+        return
+    compare_engine_checksum_dumps(
+        baseline_dir=f"{dump_dir}/baseline/phase_b/engine_checksums",
+        target_dir=f"{dump_dir}/target/phase_b/engine_checksums",
+    )
 
 
 TEST_NAME: str = "trainer_ft_deterministic"

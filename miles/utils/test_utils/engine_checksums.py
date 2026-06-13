@@ -62,3 +62,90 @@ class EngineChecksumDumper:
             len(engine_responses),
             rollout_dir,
         )
+
+
+def compare_engine_checksum_dumps(*, baseline_dir: str, target_dir: str) -> None:
+    """Assert two EngineChecksumDumper trees are identical per rollout / engine / tensor.
+
+    Fail-closed: missing dirs, mismatched rollout-dir sets, mismatched engine-file sets,
+    empty checksum maps, and any per-tensor hash difference are all hard failures.
+    """
+    baseline_root = Path(baseline_dir)
+    target_root = Path(target_dir)
+    assert baseline_root.is_dir(), f"Baseline engine checksum dir does not exist: {baseline_root}"
+    assert target_root.is_dir(), f"Target engine checksum dir does not exist: {target_root}"
+
+    baseline_rollouts = _list_child_names(baseline_root)
+    target_rollouts = _list_child_names(target_root)
+    assert baseline_rollouts, f"No rollout dirs found under {baseline_root}"
+    assert baseline_rollouts == target_rollouts, (
+        f"Engine checksum rollout dirs mismatch: baseline={baseline_rollouts} vs target={target_rollouts} "
+        f"(under {baseline_root} vs {target_root})"
+    )
+
+    num_tensor_checksums = 0
+    num_engine_files = 0
+    for rollout_name in baseline_rollouts:
+        baseline_files = _list_child_names(baseline_root / rollout_name)
+        target_files = _list_child_names(target_root / rollout_name)
+        assert baseline_files, f"No engine checksum files under {baseline_root / rollout_name}"
+        assert baseline_files == target_files, (
+            f"Engine checksum files mismatch for {rollout_name}: "
+            f"baseline={baseline_files} vs target={target_files}"
+        )
+        for file_name in baseline_files:
+            num_engine_files += 1
+            num_tensor_checksums += _compare_engine_checksum_file(
+                baseline_path=baseline_root / rollout_name / file_name,
+                target_path=target_root / rollout_name / file_name,
+                context=f"{rollout_name}/{file_name}",
+            )
+
+    print(
+        f"Engine checksum comparison passed: {len(baseline_rollouts)} rollout(s), "
+        f"{num_engine_files} engine file(s), {num_tensor_checksums} tensor checksum(s) compared "
+        f"({baseline_root} vs {target_root})"
+    )
+
+
+def _list_child_names(directory: Path) -> list[str]:
+    return sorted(p.name for p in directory.iterdir())
+
+
+def _compare_engine_checksum_file(*, baseline_path: Path, target_path: Path, context: str) -> int:
+    baseline = json.loads(baseline_path.read_text())
+    target = json.loads(target_path.read_text())
+
+    assert baseline.get("success") is True, f"{context}: baseline checksum response not successful: {baseline}"
+    assert target.get("success") is True, f"{context}: target checksum response not successful: {target}"
+    baseline_ranks: list[dict] = baseline["ranks"]
+    target_ranks: list[dict] = target["ranks"]
+    assert len(baseline_ranks) == len(target_ranks), (
+        f"{context}: rank count mismatch: baseline={len(baseline_ranks)} vs target={len(target_ranks)}"
+    )
+
+    num_tensor_checksums = 0
+    mismatches: list[str] = []
+    for rank_index, (baseline_rank, target_rank) in enumerate(zip(baseline_ranks, target_ranks, strict=True)):
+        baseline_checksums: dict[str, str] = baseline_rank["checksums"]
+        target_checksums: dict[str, str] = target_rank["checksums"]
+        assert baseline_checksums, f"{context} rank {rank_index}: baseline has no tensor checksums"
+        assert set(baseline_checksums) == set(target_checksums), (
+            f"{context} rank {rank_index}: tensor name sets differ: "
+            f"baseline-only={sorted(set(baseline_checksums) - set(target_checksums))}, "
+            f"target-only={sorted(set(target_checksums) - set(baseline_checksums))}"
+        )
+        for tensor_name in sorted(baseline_checksums):
+            num_tensor_checksums += 1
+            if baseline_checksums[tensor_name] != target_checksums[tensor_name]:
+                mismatches.append(
+                    f"rank {rank_index} tensor '{tensor_name}': "
+                    f"baseline={baseline_checksums[tensor_name]} vs target={target_checksums[tensor_name]}"
+                )
+
+    assert not mismatches, (
+        f"Engine weight checksum mismatch in {context} ({len(mismatches)} tensor(s)); the engine weights "
+        f"after this update_weights are not bitwise-identical between baseline and target:\n"
+        + "\n".join(f"  - {m}" for m in mismatches)
+    )
+    return num_tensor_checksums
