@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 
-def _run_comparator(
+def run_comparator(
     *,
     baseline_path: Path,
     target_path: Path,

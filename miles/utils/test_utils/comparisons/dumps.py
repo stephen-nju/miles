@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from miles.utils.test_utils.comparisons.comparators import _run_comparator
+from miles.utils.test_utils.comparisons.comparators import run_comparator
 
 # Shared regexes for model-input / metadata tensors that are not weights or grads to
 # compare. Exposed as named constants (not as defaults) so each test passes them
@@ -41,7 +41,7 @@ def compare_dumps(
 
     failed_leaves: list[str] = []
     for leaf in baseline_leaves:
-        result = _run_comparator(
+        result = run_comparator(
             baseline_path=baseline_root / leaf,
             target_path=target_root / leaf,
             diff_thresholds=diff_thresholds,
