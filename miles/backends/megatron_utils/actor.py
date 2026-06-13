@@ -16,6 +16,7 @@ from miles.utils import train_dump_utils
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group, init_process_group
 from miles.utils.event_logger.logger import event_logger_context
+from miles.utils.argparse_utils import inplace_modify_args
 from miles.utils.hf_config import load_hf_config
 from miles.utils.indep_dp import IndepDPInfo
 from miles.utils.memory_utils import clear_memory, print_memory
@@ -159,23 +160,16 @@ class MegatronTrainRayActor(TrainRayActor):
         elif args.non_persistent_ckpt_type == "local":
             checkpointing_context = {"local_checkpoint_manager": InMemoryCheckpointManager()}
 
-        if recv_ckpt_src_rank is not None:
-            # A cold start (no --load) sets no_load_optim/no_load_rng/finetune for the
-            # initial load, but a healing cell must apply the peer's transferred
-            # checkpoint in full: skipping the optimizer state (Adam moments, step
-            # counts) or RNG makes the healed replica diverge from the survivors on
-            # its very first optimizer step.
-            old_load_flags = args.no_load_optim, args.no_load_rng, args.finetune
-            args.no_load_optim = False
-            args.no_load_rng = False
-            args.finetune = False
-        try:
+        # A healing cell must apply the peer's checkpoint in full; cold starts (no
+        # --load) set these flags and would silently drop the transferred optimizer
+        # and RNG state.
+        heal_load_overrides: dict[str, object] = (
+            dict(no_load_optim=False, no_load_rng=False, finetune=False) if recv_ckpt_src_rank is not None else {}
+        )
+        with inplace_modify_args(args, heal_load_overrides):
             (self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id) = initialize_model_and_optimizer(
                 args, role, checkpointing_context=checkpointing_context
             )
-        finally:
-            if recv_ckpt_src_rank is not None:
-                args.no_load_optim, args.no_load_rng, args.finetune = old_load_flags
 
         parallel_state = get_parallel_state()
         if parallel_state.cp.size > 1:

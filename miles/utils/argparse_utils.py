@@ -9,6 +9,8 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import types
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Generic, TypeVar, get_type_hints
 
@@ -129,3 +131,16 @@ class DataclassArgparseBridge(Generic[T]):
                 parts.append(f"{flag} {value}")
 
         return " ".join(parts)
+
+
+@contextmanager
+def inplace_modify_args(args: argparse.Namespace, overrides: dict[str, object]) -> Iterator[None]:
+    """Temporarily set attributes on ``args``, restoring the originals on exit."""
+    old_values = {key: getattr(args, key) for key in overrides}
+    for key, value in overrides.items():
+        setattr(args, key, value)
+    try:
+        yield
+    finally:
+        for key, value in old_values.items():
+            setattr(args, key, value)

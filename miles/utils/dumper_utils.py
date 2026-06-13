@@ -281,12 +281,9 @@ def _barrier_after_dump_dir_cleanup() -> None:
         try:
             indep_dp.group.barrier()
         except Exception:
-            # A peer cell dying mid-step aborts the cross-cell PG, releasing this
-            # barrier with DistBackendError. The dead peer cannot dump, so proceeding
-            # is safe, and the cross-cell gradient allreduce later in the same step
-            # observes the abort and turns it into DISCARDED_SHOULD_RETRY. Raising
-            # here would instead mark this healthy survivor cell as errored — if it
-            # is the last one, the whole group becomes unrecoverable.
+            # A dead peer aborts the cross-cell PG and releases this barrier with an
+            # error. Proceed: the peer cannot dump anyway, and the gradient allreduce
+            # later in the step turns the abort into DISCARDED_SHOULD_RETRY.
             logger.error(
                 "cross-cell barrier after dump dir cleanup raised; continuing degraded",
                 exc_info=True,
