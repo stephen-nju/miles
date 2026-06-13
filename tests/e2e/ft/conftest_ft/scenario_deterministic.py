@@ -15,12 +15,21 @@ from miles.utils.test_utils.comparisons import (
     compare_metrics,
 )
 
-NUM_PHASE_A_STEPS: int = 1
-# --num-rollout value; phase_b resumes from the phase_a ckpt and executes rollouts
-# [NUM_PHASE_A_STEPS, NUM_PHASE_B_STEPS). With 4, rollouts 1..3 run: stop/start fires
-# at the end of rollout 2, so healing executes at the start of rollout 3 and rollout 3
-# trains with the healed cell. With 3, healing would never run (nothing after rollout 2).
-NUM_PHASE_B_STEPS: int = 4
+# Both phases execute the same operations (one shared builder, parameterized only by the
+# phase's start rollout id): NUM_ROLLOUTS_PER_PHASE rollouts, the same relative action
+# offsets, and a ckpt save after every rollout. Only the start regime differs: phase_a
+# cold-starts (no --load => start_rollout_id=0), phase_b resumes from phase_a's last ckpt
+# (start_rollout_id = loaded_rollout_id + 1 = NUM_ROLLOUTS_PER_PHASE).
+#
+# Rollout ids are global across phases: phase_a executes [0, NUM_ROLLOUTS_PER_PHASE) and
+# phase_b executes [NUM_ROLLOUTS_PER_PHASE, TOTAL_NUM_ROLLOUTS). Off-by-one convention:
+# --num-rollout is the exclusive end rollout id (TOTAL_NUM_ROLLOUTS for both phases), NOT
+# a per-run count; each phase instead stops after its NUM_ROLLOUTS_PER_PHASE rollouts via
+# --debug-exit-after-rollout, which counts rollouts executed in the current run and fires
+# after that rollout's ckpt save.
+NUM_ROLLOUTS_PER_PHASE: int = 3
+TOTAL_NUM_ROLLOUTS: int = 2 * NUM_ROLLOUTS_PER_PHASE
+PHASE_START_ROLLOUT_IDS: dict[str, int] = {"phase_a": 0, "phase_b": NUM_ROLLOUTS_PER_PHASE}
 
 _DETERMINISTIC_ENV_VARS: str = (
     '--train-env-vars \'{"NCCL_ALGO": "Ring", '
@@ -28,30 +37,37 @@ _DETERMINISTIC_ENV_VARS: str = (
     '"CUBLAS_WORKSPACE_CONFIG": ":4096:8"}\' '
 )
 
-# rollout_id in phase_b starts from NUM_PHASE_A_STEPS (ckpt resume offset)
-_DETERMINISTIC_ACTIONS: list[dict] = [
-    {"at_rollout": NUM_PHASE_A_STEPS + 1, "action": "stop_cell_at_end", "cell_index": -1},
-    {"at_rollout": NUM_PHASE_A_STEPS + 1, "action": "start_cell_at_end", "cell_index": -1},
-]
+
+def _build_actions(phase_start_rollout_id: int) -> list[dict]:
+    # stop/start fire at the end of the phase's second rollout, so healing executes at the
+    # start of the phase's third (last) rollout, which then trains with the healed cell.
+    # That last rollout must exist, otherwise healing would never run.
+    heal_trigger_rollout_id: int = phase_start_rollout_id + 1
+    return [
+        {"at_rollout": heal_trigger_rollout_id, "action": "stop_cell_at_end", "cell_index": -1},
+        {"at_rollout": heal_trigger_rollout_id, "action": "start_cell_at_end", "cell_index": -1},
+    ]
 
 
 def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enable_dumper: bool = True) -> str:
-    is_phase_a: bool = dump_dir.endswith("phase_a")
-    base = get_common_train_args(mode, dump_dir=dump_dir, num_steps=NUM_PHASE_B_STEPS, enable_dumper=enable_dumper)
+    phase_name: str = dump_dir.rsplit("/", 1)[-1]
+    phase_start_rollout_id: int = PHASE_START_ROLLOUT_IDS[phase_name]
+
+    base = get_common_train_args(mode, dump_dir=dump_dir, num_steps=TOTAL_NUM_ROLLOUTS, enable_dumper=enable_dumper)
     base += "--deterministic-mode " + _DETERMINISTIC_ENV_VARS
     base += "--debug-deterministic-collective "
 
     if is_target:
         base += get_ft_args(mode)
 
-    if is_phase_a:
-        base += f"--save {dump_dir}/ckpt --save-interval 1 "
-        base += f"--debug-exit-after-rollout {NUM_PHASE_A_STEPS} "
-    else:
+    base += f"--save {dump_dir}/ckpt --save-interval 1 "
+    base += f"--debug-exit-after-rollout {NUM_ROLLOUTS_PER_PHASE} "
+    if phase_name != "phase_a":
         phase_a_dir = dump_dir.replace("/phase_b", "/phase_a")
         base += f"--load {phase_a_dir}/ckpt "
-        if is_target:
-            base += f"--ci-ft-test-actions '{json.dumps(_DETERMINISTIC_ACTIONS)}' "
+
+    if is_target:
+        base += f"--ci-ft-test-actions '{json.dumps(_build_actions(phase_start_rollout_id))}' "
 
     return base
 
@@ -80,46 +96,53 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
     # This requires the run to be fully deterministic on both sides.
     # Any divergence is a real bug and must be fixed at the source, never hidden by
     # loosening these thresholds.
+    #
+    # Both phases are compared: phase_a exercises healing on a cold-started run,
+    # phase_b exercises healing after resuming from phase_a's (post-healing) ckpt.
     grad_norm_key = "train/grad_norm"
-    compare_metrics(
-        baseline_dir=f"{dump_dir}/baseline/phase_b",
-        target_dir=f"{dump_dir}/target/phase_b",
-        rtol=0.0,
-        atol=0.0,
-        key_prefixes=["train/"],
-        exclude_keys=[grad_norm_key],
-    )
-    compare_metrics(
-        baseline_dir=f"{dump_dir}/baseline/phase_b",
-        target_dir=f"{dump_dir}/target/phase_b",
-        rtol=1e-6,
-        atol=0.0,
-        key_prefixes=[grad_norm_key],
-        exclude_keys=[],
-    )
-    phase_b_rollout_ids = range(NUM_PHASE_A_STEPS, NUM_PHASE_B_STEPS)
-    expected_leaves = {f"fwd_bwd/rollout_{rollout_id}" for rollout_id in phase_b_rollout_ids}
-    actual_leaves = {
-        str(p.parent.relative_to(Path(f"{dump_dir}/baseline/phase_b/dumps")))
-        for p in Path(f"{dump_dir}/baseline/phase_b/dumps").rglob("*.pt")
-    }
-    assert actual_leaves == expected_leaves, (
-        f"Dump leaves {actual_leaves} do not match the expected phase_b rollouts {expected_leaves}; "
-        f"the post-healing rollout must be present or healing was never exercised"
-    )
+    for phase, phase_start_rollout_id in PHASE_START_ROLLOUT_IDS.items():
+        baseline_dir = f"{dump_dir}/baseline/{phase}"
+        target_dir = f"{dump_dir}/target/{phase}"
+        compare_metrics(
+            baseline_dir=baseline_dir,
+            target_dir=target_dir,
+            rtol=0.0,
+            atol=0.0,
+            key_prefixes=["train/"],
+            exclude_keys=[grad_norm_key],
+        )
+        compare_metrics(
+            baseline_dir=baseline_dir,
+            target_dir=target_dir,
+            rtol=1e-6,
+            atol=0.0,
+            key_prefixes=[grad_norm_key],
+            exclude_keys=[],
+        )
 
-    compare_dumps(
-        baseline_dir=f"{dump_dir}/baseline/phase_b",
-        target_dir=f"{dump_dir}/target/phase_b",
-        diff_thresholds=[(".*", "rel <= 0")],
-        allow_skipped_pattern=INPUT_TENSORS_SKIP_PATTERN,
-        allow_failed_pattern=INPUT_TENSORS_ALLOW_FAILED_PATTERN,
-    )
+        phase_rollout_ids = range(phase_start_rollout_id, phase_start_rollout_id + NUM_ROLLOUTS_PER_PHASE)
+        expected_leaves = {f"fwd_bwd/rollout_{rollout_id}" for rollout_id in phase_rollout_ids}
+        actual_leaves = {
+            str(p.parent.relative_to(Path(f"{baseline_dir}/dumps")))
+            for p in Path(f"{baseline_dir}/dumps").rglob("*.pt")
+        }
+        assert actual_leaves == expected_leaves, (
+            f"{phase}: dump leaves {actual_leaves} do not match the expected rollouts {expected_leaves}; "
+            f"the post-healing rollout must be present or healing was never exercised"
+        )
+
+        compare_dumps(
+            baseline_dir=baseline_dir,
+            target_dir=target_dir,
+            diff_thresholds=[(".*", "rel <= 0")],
+            allow_skipped_pattern=INPUT_TENSORS_SKIP_PATTERN,
+            allow_failed_pattern=INPUT_TENSORS_ALLOW_FAILED_PATTERN,
+        )
     print("Deterministic healing comparison test PASSED")
 
 
 TEST_NAME: str = "trainer_ft_deterministic"
-PHASES: list[str] = ["phase_a", "phase_b"]
+PHASES: list[str] = list(PHASE_START_ROLLOUT_IDS)
 
 
 app, run_ci = create_comparison_app_and_run_ci(

@@ -15,8 +15,27 @@ from miles.utils.test_utils.comparisons import (
     compare_metrics,
 )
 
-NUM_PHASE_A_STEPS: int = 1
-NUM_PHASE_B_STEPS: int = 4
+# Both phases execute the same operations (one shared builder, parameterized only by the
+# phase's start rollout id): NUM_ROLLOUTS_PER_PHASE rollouts, the same relative fault
+# timeline, and a ckpt save after every rollout. Only the start regime differs: phase_a
+# cold-starts (no --load => start_rollout_id=0), phase_b resumes from phase_a's last ckpt
+# (start_rollout_id = loaded_rollout_id + 1 = NUM_ROLLOUTS_PER_PHASE).
+#
+# Rollout ids are global across phases: phase_a executes [0, NUM_ROLLOUTS_PER_PHASE) and
+# phase_b executes [NUM_ROLLOUTS_PER_PHASE, TOTAL_NUM_ROLLOUTS). Off-by-one convention:
+# --num-rollout is the exclusive end rollout id (TOTAL_NUM_ROLLOUTS for both phases), NOT
+# a per-run count; each phase instead stops after its NUM_ROLLOUTS_PER_PHASE rollouts via
+# --debug-exit-after-rollout, which counts rollouts executed in the current run and fires
+# after that rollout's ckpt save.
+NUM_ROLLOUTS_PER_PHASE: int = 3
+TOTAL_NUM_ROLLOUTS: int = 2 * NUM_ROLLOUTS_PER_PHASE
+PHASE_START_ROLLOUT_IDS: dict[str, int] = {"phase_a": 0, "phase_b": NUM_ROLLOUTS_PER_PHASE}
+
+# First rollout id whose target-side state carries the fault-inherent ulp drift of a
+# degraded-quorum commit: the phase_a fault hits rollout 1 (= phase_a start + 1), so the
+# target's weights drift from rollout 2 onward, and that drift persists into phase_b
+# through the ckpt (phase_b resumes from the drift-carrying phase_a ckpt).
+_FIRST_POST_FAULT_ROLLOUT_ID: int = PHASE_START_ROLLOUT_IDS["phase_a"] + 2
 
 # Per-tensor pass predicates. A few specific near-zero grads diverge under the
 # crash-recovery (solo / degraded-quorum) collective's reduction order while their
@@ -51,43 +70,55 @@ _POST_FAULT_DIFF_THRESHOLDS: list[tuple[str, str]] = [
     (".*", "rel <= 0.0085"),
 ]
 
-# rollout_id in phase_b starts from NUM_PHASE_A_STEPS (ckpt resume offset)
-_WITH_FAILURE_ACTIONS: list[dict] = [
-    {
-        "at_rollout": NUM_PHASE_A_STEPS + 1,
-        "action": "crash_before_allreduce",
-        "cell_index": -1,
-        "rank": 0,
-        "attempt": 0,
-    },
-    {"at_rollout": NUM_PHASE_A_STEPS + 1, "action": "stop_cell_at_end", "cell_index": -1},
-    {"at_rollout": NUM_PHASE_A_STEPS + 1, "action": "start_cell_at_end", "cell_index": -1},
-]
+
+def _build_actions(phase_start_rollout_id: int) -> list[dict]:
+    # The fault hits the phase's second rollout: crash at attempt 0 -> degraded-quorum
+    # commit at attempt 1, then stop/start at the end of that rollout so healing executes
+    # at the start of the phase's third (last) rollout, which trains with the healed cell.
+    fault_rollout_id: int = phase_start_rollout_id + 1
+    return [
+        {
+            "at_rollout": fault_rollout_id,
+            "action": "crash_before_allreduce",
+            "cell_index": -1,
+            "rank": 0,
+            "attempt": 0,
+        },
+        {"at_rollout": fault_rollout_id, "action": "stop_cell_at_end", "cell_index": -1},
+        {"at_rollout": fault_rollout_id, "action": "start_cell_at_end", "cell_index": -1},
+    ]
 
 
 def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enable_dumper: bool = True) -> str:
-    is_phase_a: bool = dump_dir.endswith("phase_a")
-    base = get_common_train_args(mode, dump_dir=dump_dir, num_steps=NUM_PHASE_B_STEPS, enable_dumper=enable_dumper)
+    phase_name: str = dump_dir.rsplit("/", 1)[-1]
+    phase_start_rollout_id: int = PHASE_START_ROLLOUT_IDS[phase_name]
+
+    base = get_common_train_args(mode, dump_dir=dump_dir, num_steps=TOTAL_NUM_ROLLOUTS, enable_dumper=enable_dumper)
 
     if is_target:
         base += get_ft_args(mode)
 
-    if is_phase_a:
-        base += f"--save {dump_dir}/ckpt --save-interval 1 "
-        base += f"--debug-exit-after-rollout {NUM_PHASE_A_STEPS} "
-    else:
+    base += f"--save {dump_dir}/ckpt --save-interval 1 "
+    base += f"--debug-exit-after-rollout {NUM_ROLLOUTS_PER_PHASE} "
+    if phase_name != "phase_a":
         phase_a_dir = dump_dir.replace("/phase_b", "/phase_a")
         base += f"--load {phase_a_dir}/ckpt "
-        if is_target:
-            base += f"--ci-ft-test-actions '{json.dumps(_WITH_FAILURE_ACTIONS)}' "
-            if mode.has_real_rollout:
-                # Post-fault rollouts inject the baseline's recorded data (see README).
-                baseline_dump_dir = dump_dir.replace("/target/", "/baseline/")
-                base += (
-                    f"--ci-inject-rollout-data-path {baseline_dump_dir}/rollout_data/{{rollout_id}}.pt "
-                    f"--ci-inject-rollout-data-start-rollout-id {NUM_PHASE_A_STEPS + 2} "
-                    "--ci-inject-rollout-data-min-match-ratio 0.5 "
-                )
+
+    if is_target:
+        base += f"--ci-ft-test-actions '{json.dumps(_build_actions(phase_start_rollout_id))}' "
+        if mode.has_real_rollout:
+            # Post-fault rollouts inject the baseline's recorded data (see README). The
+            # baseline records every phase's rollout data under its own dump dir, so the
+            # injection path mirrors this phase's dump dir on the baseline side. In
+            # phase_a injection starts right after the fault; in phase_b every rollout is
+            # injected because all of phase_b's generation runs on drift-carrying weights.
+            baseline_dump_dir = dump_dir.replace("/target/", "/baseline/")
+            inject_start_rollout_id = max(phase_start_rollout_id, _FIRST_POST_FAULT_ROLLOUT_ID)
+            base += (
+                f"--ci-inject-rollout-data-path {baseline_dump_dir}/rollout_data/{{rollout_id}}.pt "
+                f"--ci-inject-rollout-data-start-rollout-id {inject_start_rollout_id} "
+                "--ci-inject-rollout-data-min-match-ratio 0.5 "
+            )
 
     return base
 
@@ -101,42 +132,46 @@ def _build_target_args(mode: FTTestMode, dump_dir: str, enable_dumper: bool = Tr
 
 
 def _compare(dump_dir: str, mode: FTTestMode) -> None:
-    compare_metrics(
-        baseline_dir=f"{dump_dir}/baseline/phase_b",
-        target_dir=f"{dump_dir}/target/phase_b",
-        rtol=5e-2,
-        atol=1e-7,
-        key_prefixes=["train/"],
-        exclude_keys=[],
-    )
-
-    phase_b_rollout_ids = range(NUM_PHASE_A_STEPS, NUM_PHASE_B_STEPS)
-    expected_leaves = {f"fwd_bwd/rollout_{rollout_id}" for rollout_id in phase_b_rollout_ids}
-    actual_leaves = {
-        str(p.parent.relative_to(Path(f"{dump_dir}/baseline/phase_b/dumps")))
-        for p in Path(f"{dump_dir}/baseline/phase_b/dumps").rglob("*.pt")
-    }
-    assert actual_leaves == expected_leaves, (
-        f"Dump leaves {actual_leaves} do not match the per-rollout comparison loop "
-        f"{expected_leaves}; a new leaf would silently skip comparison"
-    )
-
-    first_injected_rollout_id = NUM_PHASE_A_STEPS + 2
-    for rollout_id in phase_b_rollout_ids:
-        is_post_fault = mode.has_real_rollout and rollout_id >= first_injected_rollout_id
-        compare_dumps(
-            baseline_dir=f"{dump_dir}/baseline/phase_b",
-            target_dir=f"{dump_dir}/target/phase_b",
-            diff_thresholds=_POST_FAULT_DIFF_THRESHOLDS if is_post_fault else _DIFF_THRESHOLDS,
-            allow_skipped_pattern=INPUT_TENSORS_SKIP_PATTERN,
-            allow_failed_pattern=INPUT_TENSORS_ALLOW_FAILED_PATTERN,
-            phase_subdir=f"fwd_bwd/rollout_{rollout_id}",
+    # Both phases are compared: phase_a exercises fault + healing on a cold-started run,
+    # phase_b exercises the same timeline after resuming from phase_a's post-FT ckpt.
+    for phase, phase_start_rollout_id in PHASE_START_ROLLOUT_IDS.items():
+        baseline_dir = f"{dump_dir}/baseline/{phase}"
+        target_dir = f"{dump_dir}/target/{phase}"
+        compare_metrics(
+            baseline_dir=baseline_dir,
+            target_dir=target_dir,
+            rtol=5e-2,
+            atol=1e-7,
+            key_prefixes=["train/"],
+            exclude_keys=[],
         )
+
+        phase_rollout_ids = range(phase_start_rollout_id, phase_start_rollout_id + NUM_ROLLOUTS_PER_PHASE)
+        expected_leaves = {f"fwd_bwd/rollout_{rollout_id}" for rollout_id in phase_rollout_ids}
+        actual_leaves = {
+            str(p.parent.relative_to(Path(f"{baseline_dir}/dumps")))
+            for p in Path(f"{baseline_dir}/dumps").rglob("*.pt")
+        }
+        assert actual_leaves == expected_leaves, (
+            f"{phase}: dump leaves {actual_leaves} do not match the per-rollout comparison loop "
+            f"{expected_leaves}; a new leaf would silently skip comparison"
+        )
+
+        for rollout_id in phase_rollout_ids:
+            is_post_fault = mode.has_real_rollout and rollout_id >= _FIRST_POST_FAULT_ROLLOUT_ID
+            compare_dumps(
+                baseline_dir=baseline_dir,
+                target_dir=target_dir,
+                diff_thresholds=_POST_FAULT_DIFF_THRESHOLDS if is_post_fault else _DIFF_THRESHOLDS,
+                allow_skipped_pattern=INPUT_TENSORS_SKIP_PATTERN,
+                allow_failed_pattern=INPUT_TENSORS_ALLOW_FAILED_PATTERN,
+                phase_subdir=f"fwd_bwd/rollout_{rollout_id}",
+            )
     print("With-failure comparison test PASSED")
 
 
 TEST_NAME: str = "trainer_ft_with_failure"
-PHASES: list[str] = ["phase_a", "phase_b"]
+PHASES: list[str] = list(PHASE_START_ROLLOUT_IDS)
 
 
 app, run_ci = create_comparison_app_and_run_ci(

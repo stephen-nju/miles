@@ -11,8 +11,8 @@ labels=["ft"])`. The CUDA CI runner executes each entry as bare `python3 <file>`
 | Scenario (`conftest_ft/scenario_*.py`) | Type | What it verifies |
 |------|------|-----------------|
 | `scenario_no_failure` | Comparison | indep_dp matches normal DP when no faults |
-| `scenario_with_failure` | Comparison, multi-phase | indep_dp matches normal DP after fault + ckpt resume |
-| `scenario_deterministic` | Comparison, multi-phase | healing state transfer is bitwise-correct (stop+start) |
+| `scenario_with_failure` | Comparison, multi-phase | indep_dp matches normal DP under fault + healing, on cold start and on resume from a post-FT ckpt |
+| `scenario_deterministic` | Comparison, multi-phase | healing state transfer is bitwise-correct (stop+start), on cold start and on resume from a post-healing ckpt |
 | `scenario_ft_random` | Non-comparison | system survives random crashes without hanging |
 | `scenario_realistic_gsm8k` | Non-comparison | model still reaches gsm8k accuracy under random crashes |
 
@@ -150,33 +150,39 @@ Roughly equal, not bitwise — allreduce kernel ordering differs across topologi
 
 ### `scenario_with_failure`
 
-Multi-phase comparison test. Verifies indep_dp matches normal DP after fault + checkpoint resume.
+Multi-phase comparison test. Verifies indep_dp matches normal DP under fault + healing, in
+both start regimes: cold start (phase_a) and resume from a post-FT checkpoint (phase_b).
 
 ```
 Type: comparison, multi-phase (phase_a + phase_b)
-Phase A steps: 1, Phase B steps: 3 (rollouts 1..3; --num-rollout 4 resumed from the
-rollout-0 checkpoint), metrics rtol: 5e-2
+Both phases execute the same operations, built by one shared builder parameterized only
+by the phase's start rollout id P: 3 rollouts, the same relative fault timeline, and a
+checkpoint save after every rollout (--save-interval 1). Only the start regime differs:
+  phase_a: cold start (no --load, start_rollout_id=0) — rollouts 0..2 (P=0)
+  phase_b: resumes from phase_a's last (rollout-2) ckpt
+           (start_rollout_id = loaded + 1 = 3) — rollouts 3..5 (P=3)
+--num-rollout is 6 for both phases (it is the exclusive end rollout id, not a per-run
+count); each phase stops after its 3 rollouts via --debug-exit-after-rollout 3, which
+counts rollouts executed within the run and fires after that rollout's ckpt save.
 
-Phase A (both baseline and target):
-  1. Run 1 step of training
-  2. Save checkpoint (--save-interval 1)
+Per-phase timeline — baseline:
+  1. Rollouts P..P+2: normal steps, save ckpt after every rollout
 
-Phase B — baseline:
-  1. Resume from phase_a checkpoint
-  2. Run 3 normal steps (rollouts 1..3)
-
-Phase B — target:
-  1. Resume from phase_a checkpoint
-  2. Rollout 1: N cells normal
-  3. Rollout 2, attempt 0: crash_before_allreduce on last cell rank 0
+Per-phase timeline — target:
+  1. Rollout P: N cells normal
+  2. Rollout P+1, attempt 0: crash_before_allreduce on last cell rank 0
      → os._exit(1) → allreduce timeout → should_commit=false → retry
-  4. Rollout 2, attempt 1: _refresh_cells() reconfigure → N-1 cells → commit
-  5. After rollout 2: stop_cell_at_end(last) + start_cell_at_end(last)
-  6. Rollout 3: _refresh_cells() healing → N cells, trains with the healed cell
+  3. Rollout P+1, attempt 1: _refresh_cells() reconfigure → N-1 cells → commit
+  4. After rollout P+1: stop_cell_at_end(last) + start_cell_at_end(last)
+  5. Rollout P+2: _refresh_cells() healing → N cells, trains with the healed cell
+  (a ckpt is saved after every rollout, including the degraded-quorum commit at P+1 and
+  the post-healing rollout P+2, so phase_b's resume exercises a post-FT checkpoint)
 
-Compare: phase_b dumps per rollout (rel <= 0.0085; MoE expert grads and QK-norm grads
-also tolerate max_abs <= 1e-3; in the real_rollout mode the post-fault/injected rollouts'
-grads tolerate max_abs <= 3e-3 — see the dense-mode section below) and metrics (rtol=5e-2).
+Compare: BOTH phases' dumps per rollout (rel <= 0.0085; MoE expert grads and QK-norm grads
+also tolerate max_abs <= 1e-3; in the real_rollout mode every rollout from the first
+post-fault one (rollout 2) onward — including all of phase_b, whose target resumes from a
+drift-carrying ckpt — tolerates max_abs <= 3e-3 on the measured grad families, see the
+dense-mode section below) and metrics (rtol=5e-2).
 
 Fault injection via --ci-ft-test-actions JSON (data-driven, executed by RayTrainGroup).
 The JSON `at_rollout` field specifies which rollout_id triggers the action.
@@ -186,7 +192,13 @@ The `attempt` field (for actor-level actions like `crash_before_allreduce`) spec
 The `dp2_cp2_real_rollout_dense` mode runs this scenario with live generation (real sglang
 engines, deterministic inference, temperature 0.8), and the target's **post-fault rollouts
 inject the baseline's recorded rollout data** (`--ci-inject-rollout-data-path` pointing at
-the baseline phase_b's `--save-debug-rollout-data` output, start id = crash rollout + 1).
+the same phase's baseline `--save-debug-rollout-data` output; both sides record every
+phase). The injection start id is derived per phase as
+`max(phase start, first post-fault rollout id)`: phase_a injects from rollout 2 (right
+after its fault), while phase_b injects from rollout 3 — i.e. all of its rollouts —
+because the target resumes from phase_a's drift-carrying ckpt, so every phase_b rollout
+generates on drifted weights (including phase_b's own crash rollout 4, whose injected data
+is redriven by the retry).
 Rationale: the post-crash degraded-quorum commit accumulates microbatches in a different
 floating-point bracketing than the fault-free side — a fault-inherent ulp-level weight
 difference no collective ordering removes. Under live sampling that drift flips individual
@@ -199,11 +211,13 @@ strict grad/activation/metric comparison with zero threshold relaxation.
 What stays real on the target during injected rollouts: engines and generation itself (the
 generated samples are discarded after the fact), update_weights after the degraded commit
 and after healing, and health-monitor pause/resume — i.e. the whole
-crash→retry→heal→weight-sync path. Known gap: the update_weights that runs after the
-rollout-3 (post-healing) train step is executed but its output is not consumed by any
-later rollout, so a regression there is only caught by the generation match guard at
-rollout 3 (post-degraded-commit weights) and by `realistic_gsm8k` accuracy, not by this
-scenario's strict comparison. Injected rollouts' dump comparison gives a
+crash→retry→heal→weight-sync path. Known gap: the update_weights that runs after each
+phase's post-healing train step (rollouts 2 and 5, the last rollout of each phase) is
+executed but its output is not consumed by any later rollout in that run (phase_b restarts
+from the checkpoint), so a regression there is only caught by the generation match guard
+at the injected rollouts (post-degraded-commit / post-resume weights) and by
+`realistic_gsm8k` accuracy, not by this scenario's strict comparison. Injected rollouts'
+dump comparison gives a
 `max_abs <= 3e-3` floor to the **measured noisy grad families only** (decoder-layer
 QK-norms, folded `layer_norm_weight`s, and the attention/MLP weight matrices): the
 training data is bitwise-identical, but the target's weights carry the fault-inherent ulp
@@ -223,8 +237,8 @@ ratio high, while grossly wrong post-fault engine weights (e.g. a broken update_
 make responses unrelated to the recording and drop it by two orders of magnitude — so
 wrong-weights bugs still fail the test even though the injected data replaces the
 generated content for training. What the scenario does not assert is the exact post-fault
-sampled content beyond that ratio. Pre-fault rollouts (up to and including the crash
-rollout, whose data is generated before the crash and redriven by the retry) are not
+sampled content beyond that ratio. Pre-fault rollouts (phase_a's rollouts 0 and 1 — the
+crash rollout's data is generated before the crash and redriven by the retry) are not
 injected — they remain a real sampled-data comparison.
 
 The guard's calibration (measured 2026-06-12, first post-fault rollout, 256 samples,
@@ -245,20 +259,34 @@ and far above what any gross weight corruption can produce.
 
 ### `scenario_deterministic`
 
-Multi-phase comparison test. Verifies healing state transfer is **bitwise** correct.
+Multi-phase comparison test. Verifies healing state transfer is **bitwise** correct, in
+both start regimes: cold start (phase_a) and resume from a post-healing checkpoint
+(phase_b).
 
 ```
 Type: comparison, multi-phase (phase_a + phase_b)
-Phase A steps: 1, Phase B steps: 3 (rollouts 1..3; --num-rollout 4 resumed from the
-rollout-0 checkpoint — rollout 3 must exist, otherwise healing never executes)
-Comparison: dump rel <= 0 (bitwise), metrics rtol=0 / atol=0 (exact)
+Both phases execute the same operations, built by one shared builder parameterized only
+by the phase's start rollout id P: 3 rollouts, stop/start healing at the same relative
+offset, and a checkpoint save after every rollout (--save-interval 1). Only the start
+regime differs:
+  phase_a: cold start (no --load, start_rollout_id=0) — rollouts 0..2 (P=0)
+  phase_b: resumes from phase_a's last (rollout-2, post-healing) ckpt
+           (start_rollout_id = loaded + 1 = 3) — rollouts 3..5 (P=3)
+--num-rollout is 6 for both phases (it is the exclusive end rollout id, not a per-run
+count); each phase stops after its 3 rollouts via --debug-exit-after-rollout 3, which
+counts rollouts executed within the run and fires after that rollout's ckpt save.
+Comparison: BOTH phases' dumps rel <= 0 (bitwise), metrics rtol=0 / atol=0 (exact)
 
-Phase A: same as with_failure (1 step + save ckpt).
+Per-phase target timeline:
+  1. Rollout P, P+1: all N cells normal
+  2. After rollout P+1: stop_cell_at_end(last) + start_cell_at_end(last) — trigger healing
+  3. Rollout P+2: healing at start (recv_ckpt from cell_0), then normal execution
+     (P+2 must exist, otherwise healing never executes)
 
-Phase B — target timeline:
-  1. Rollout 1, 2: all N cells normal (2 good steps, accumulate meaningful state)
-  2. After rollout 2: stop_cell_at_end(last) + start_cell_at_end(last) — trigger healing
-  3. Rollout 3: healing at start (recv_ckpt from cell_0), then normal execution
+phase_a exercises healing on a cold-started run (no --load sets
+no_load_optim/no_load_rng/finetune); phase_b exercises healing after checkpoint resume,
+and — since it must reproduce the baseline bit-for-bit — also proves that phase_a's
+post-healing checkpoint round-trips bitwise.
 
 Both baseline and target use --deterministic-mode + env vars (NCCL_ALGO=Ring,
 NVTE_ALLOW_NONDETERMINISTIC_ALGO=0, CUBLAS_WORKSPACE_CONFIG=:4096:8) for kernel
