@@ -67,11 +67,21 @@ def run_ci(
 def _prepare_gsm8k() -> None:
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command(f"hf download Qwen/{_MODEL_NAME} --local-dir /root/models/{_MODEL_NAME}")
+    # raw megatron-to-hf mode loads training weights from a megatron torch_dist
+    # checkpoint (not the HF dir), so convert once here.
+    U.convert_checkpoint(
+        model_name=_MODEL_NAME,
+        megatron_model_type=_MODEL_TYPE,
+        num_gpus_per_node=_TRAIN_GPUS,
+        hf_checkpoint=f"/root/models/{_MODEL_NAME}",
+        dir_dst="/root/models",
+        megatron_path=os.environ.get("MILES_SCRIPT_MEGATRON_PATH", "/root/Megatron-LM"),
+    )
     U.hf_download_dataset("zhuzilin/gsm8k")
 
 
 def _get_gsm8k_train_args(*, seed: int, num_rollout: int, metric_threshold: float) -> str:
-    ckpt_args = f"--hf-checkpoint /root/models/{_MODEL_NAME}/ " f"--ref-load /root/models/{_MODEL_NAME}/ "
+    ckpt_args = f"--hf-checkpoint /root/models/{_MODEL_NAME}/ " f"--ref-load /root/models/{_MODEL_NAME}_torch_dist "
 
     rollout_args = (
         "--prompt-data /root/datasets/gsm8k/train.parquet "
