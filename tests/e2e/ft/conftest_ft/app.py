@@ -66,11 +66,10 @@ def run_pipeline(
 
 
 def _cleanup_ckpt_dirs(*, dump_dir: str, phases: list[str]) -> None:
-    """Remove every side/phase ckpt dir after a successful compare; absent dirs are skipped.
+    """Remove side/phase ckpt dirs (absent dirs skipped); only safe after a successful compare.
 
-    Scenarios that save a ckpt after every rollout produce many large checkpoints per mode,
-    enough to fill the disk across CI runs. They are only needed for debugging a failed
-    compare, so this runs only after compare_fn returns successfully.
+    Per-rollout ckpts are large and only needed to debug a failed compare, so callers must
+    invoke this only once compare_fn has returned successfully.
     """
     for phase in phases:
         for side in ("baseline", "target"):
