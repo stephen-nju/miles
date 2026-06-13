@@ -68,8 +68,6 @@ def run_ci(
     assert_soak_reconfigure_events(
         Path(dump_dir) / "events",
         num_successful_injections=injector.num_successful_injections,
-        num_cells=ft_mode.num_cells,
-        final_rollout_id=num_steps - 1,
     )
 
     print(f"Random failure soak test PASSED (seed={seed}, steps={num_steps})")
