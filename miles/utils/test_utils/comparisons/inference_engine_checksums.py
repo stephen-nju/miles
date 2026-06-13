@@ -14,7 +14,9 @@ def compare_inference_engine_checksums(baseline_dir: str, target_dir: str) -> No
 
     # Each side's engines must already agree internally (same invariant as the production rule), so
     # one representative engine per rollout then proves baseline == target regardless of engine count.
-    assert not inference_engine_weight_checksum_consistency.check(baseline), "Baseline engines disagree with each other"
+    assert not inference_engine_weight_checksum_consistency.check(
+        baseline
+    ), "Baseline engines disagree with each other"
     assert not inference_engine_weight_checksum_consistency.check(target), "Target engines disagree with each other"
 
     baseline_by_rollout = _checksums_by_rollout_id(baseline)
