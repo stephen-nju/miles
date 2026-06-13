@@ -5,13 +5,6 @@ from miles.utils.event_logger.models import EngineWeightChecksumEvent
 
 
 def compare_engine_checksums(baseline_dir: str, target_dir: str) -> None:
-    """Assert baseline and target pushed bitwise-identical weights to every rollout engine.
-
-    Aligns EngineWeightChecksumEvents by rollout_id, then compares the per-engine checksum
-    lists element-wise. Hashes are bitwise by construction, so any difference is a real
-    weight-sync divergence. Fail-closed: the rollout_id sets, the per-rollout engine counts,
-    and the per-engine tensor-name sets must be equal and non-empty on both sides.
-    """
     baseline = _index_engine_checksums(_read_engine_checksum_events(Path(baseline_dir)))
     target = _index_engine_checksums(_read_engine_checksum_events(Path(target_dir)))
 

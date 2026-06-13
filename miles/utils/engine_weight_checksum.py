@@ -1,12 +1,9 @@
-"""Flatten the nested check_weights("checksum") response into per-engine checksum dicts."""
-
 from typing import Any
 
 EngineChecksums = dict[str, str]
 
 
 def flatten_engine_checksums(check_weights_result: Any) -> list[EngineChecksums]:
-    """One merged {name: hash} dict per surviving engine, in flattened order."""
     engine_bodies = _flatten_to_engine_bodies(check_weights_result)
     surviving = [body for body in engine_bodies if body is not None]
     assert surviving, (

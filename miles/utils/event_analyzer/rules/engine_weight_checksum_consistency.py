@@ -1,5 +1,3 @@
-"""Rule: all rollout engines of a given rollout must hold identical weights."""
-
 from collections.abc import Iterable
 
 from miles.utils.event_analyzer.rules.checksum_compare import ChecksumMismatchIssue, compare_flat_dicts

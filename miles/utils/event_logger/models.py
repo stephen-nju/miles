@@ -73,9 +73,7 @@ class CellReconfigureEvent(EventBase):
 class EngineWeightChecksumEvent(EventBase):
     type: Literal["engine_weight_checksum"] = "engine_weight_checksum"
     rollout_id: int
-    # One {tensor name -> hash} dict per rollout engine, in flattened
-    # servers->groups->engines order. A TP>1 engine's ranks merge with a rank{r}/
-    # key prefix so same-named shards never clobber.
+    # One {tensor -> hash} dict per rollout engine; a TP>1 engine's ranks merge with a rank{r}/ prefix.
     engine_checksums: list[dict[str, str]]
 
 

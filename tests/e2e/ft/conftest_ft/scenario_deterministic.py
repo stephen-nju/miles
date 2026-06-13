@@ -151,8 +151,6 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
             allow_failed_pattern=INPUT_TENSORS_ALLOW_FAILED_PATTERN,
         )
 
-        # Per phase, assert both sides pushed bitwise-identical weights to every engine — the
-        # only gate consuming the target's post-heal update_weights (phase_b loads phase_a ckpt).
         if mode.has_real_rollout:
             compare_engine_checksums(
                 baseline_dir=baseline_dir,

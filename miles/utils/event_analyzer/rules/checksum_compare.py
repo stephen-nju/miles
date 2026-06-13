@@ -1,10 +1,3 @@
-"""Shared checksum-comparison primitives for event_analyzer rules.
-
-Both cross_replica_weight_checksum (train-side, cell-to-cell) and
-engine_weight_checksum_consistency (rollout-side, engine-to-engine) compare flat
-``{name: hash}`` dicts and yield the same mismatch shape.
-"""
-
 from collections.abc import Iterable
 from typing import Any
 
