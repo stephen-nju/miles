@@ -32,9 +32,10 @@ def _make_mock_args(
         indep_dp=indep_dp,
         enable_witness=enable_witness,
         witness_buffer_size=100,
-        trainer_heartbeat_checker_interval=30.0,
+        trainer_heartbeat_checker_interval=10.0,
         trainer_heartbeat_checker_timeout=10.0,
         trainer_heartbeat_checker_first_wait=300.0,
+        trainer_heartbeat_checker_failure_threshold=3,
         ci_ft_test_actions=None,
         # compute_megatron_world_size_except_dp(args) = TP * PP * CP. Set CP to
         # gpus_per_cell so RayTrainGroup computes num_cells correctly.

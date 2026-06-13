@@ -15,16 +15,17 @@ logger = logging.getLogger(__name__)
 
 
 class SimpleHealthCheckerConfig(StrictBaseModel):
-    interval: float = 30.0
+    interval: float = 10.0
     timeout: float = 10.0
     first_wait: float = 0.0
+    failure_threshold: int = 3
 
     @staticmethod
     def add_arguments(parser: argparse.ArgumentParser, *, prefix: str) -> None:
         parser.add_argument(
             f"--{prefix}-interval",
             type=float,
-            default=30.0,
+            default=10.0,
             help=f"Interval in seconds between {prefix} health checks.",
         )
         parser.add_argument(
@@ -39,6 +40,15 @@ class SimpleHealthCheckerConfig(StrictBaseModel):
             default=300.0,
             help=f"Initial grace period (seconds) before starting {prefix} health checks.",
         )
+        parser.add_argument(
+            f"--{prefix}-failure-threshold",
+            type=int,
+            default=3,
+            help=(
+                f"Number of consecutive failed {prefix} checks before reporting unhealthy. "
+                "Debounces transient RPC blips so a single hiccup does not recycle a live cell."
+            ),
+        )
 
     @staticmethod
     def from_args(args: object, *, prefix: str) -> SimpleHealthCheckerConfig:
@@ -47,6 +57,7 @@ class SimpleHealthCheckerConfig(StrictBaseModel):
             interval=getattr(args, f"{attr_prefix}_interval"),
             timeout=getattr(args, f"{attr_prefix}_timeout"),
             first_wait=getattr(args, f"{attr_prefix}_first_wait"),
+            failure_threshold=getattr(args, f"{attr_prefix}_failure_threshold"),
         )
 
 
@@ -93,6 +104,7 @@ class SimpleHealthChecker(BaseHealthChecker):
         self._status = TriState.UNKNOWN
         self._paused: bool = False
         self._need_first_wait: bool = True
+        self._consecutive_failures: int = 0
         self._task: asyncio.Task[None] | None = None
 
     @property
@@ -123,6 +135,7 @@ class SimpleHealthChecker(BaseHealthChecker):
         self._paused = False
         self._need_first_wait = True
         self._status = TriState.UNKNOWN
+        self._consecutive_failures = 0
 
     async def _loop(self) -> None:
         while True:
@@ -140,9 +153,22 @@ class SimpleHealthChecker(BaseHealthChecker):
                     logger.error(f"[{self._name}] Health check failed", exc_info=True)
 
                 prev_status = self._status
-                self._status = TriState.TRUE if success else TriState.FALSE
+                if success:
+                    self._consecutive_failures = 0
+                    self._status = TriState.TRUE
+                else:
+                    self._consecutive_failures += 1
+                    # Only report unhealthy after failure_threshold consecutive failures,
+                    # so a single transient RPC blip does not recycle a live cell. Until
+                    # the threshold is reached the previous status is retained.
+                    if self._consecutive_failures >= self._config.failure_threshold:
+                        self._status = TriState.FALSE
+
                 if prev_status != self._status:
-                    logger.info(f"[{self._name}] Status changed: {prev_status.value} -> {self._status.value}")
+                    logger.info(
+                        f"[{self._name}] Status changed: {prev_status.value} -> {self._status.value} "
+                        f"(consecutive_failures={self._consecutive_failures})"
+                    )
 
                 if self._on_result is not None:
                     self._on_result(success)
@@ -187,6 +213,11 @@ def create_rollout_cell_health_checker(
             raise RuntimeError("Lead engine is None")
 
         await lead_engine.health_generate.remote()
+
+    # Preserve the pre-debounce rollout semantics for now: a single failed check
+    # reports unhealthy immediately. The trainer cell checker uses the default
+    # failure_threshold; tuning rollout debouncing is left to Rollout FT work.
+    config = config.model_copy(update={"failure_threshold": 1})
 
     return SimpleHealthChecker(
         name=f"rollout-cell-{cell_id}",

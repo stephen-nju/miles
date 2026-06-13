@@ -13,6 +13,7 @@ def _make_checker(
     interval: float = 10.0,
     timeout: float = 5.0,
     first_wait: float = 0.0,
+    failure_threshold: int = 1,
     name: str = "test",
     clock: FakeClock | None = None,
 ) -> tuple[SimpleHealthChecker, FakeClock]:
@@ -28,7 +29,9 @@ def _make_checker(
         name=name,
         check_fn=check_fn,
         on_result=on_result,
-        config=SimpleHealthCheckerConfig(interval=interval, timeout=timeout, first_wait=first_wait),
+        config=SimpleHealthCheckerConfig(
+            interval=interval, timeout=timeout, first_wait=first_wait, failure_threshold=failure_threshold
+        ),
         clock=c,
     )
     return checker, c
@@ -343,6 +346,119 @@ class TestTriState:
         assert checker.status == TriState.TRUE
 
         checker.stop()
+
+
+class TestFailureThresholdDebounce:
+    """With failure_threshold > 1, transient failures must not flip the status to FALSE
+    until that many consecutive checks have failed; any success resets the counter."""
+
+    def _flaky_check_fn(self, outcomes: list[bool]):
+        idx = 0
+
+        async def check_fn() -> None:
+            nonlocal idx
+            ok = outcomes[idx]
+            idx += 1
+            if not ok:
+                raise RuntimeError("boom")
+
+        return check_fn
+
+    async def test_below_threshold_keeps_previous_status(self):
+        # success, then 2 failures (< threshold 3): status stays TRUE.
+        check_fn = self._flaky_check_fn([True, False, False])
+        checker, clock = _make_checker(check_fn=check_fn, interval=5.0, failure_threshold=3)
+        await checker.start()
+        await asyncio.sleep(0)
+        assert checker.status == TriState.TRUE
+
+        await clock.elapse(5.0)
+        assert checker.status == TriState.TRUE
+        assert checker._consecutive_failures == 1
+
+        await clock.elapse(5.0)
+        assert checker.status == TriState.TRUE
+        assert checker._consecutive_failures == 2
+
+        checker.stop()
+
+    async def test_status_flips_false_only_at_threshold(self):
+        check_fn = self._flaky_check_fn([False, False, False])
+        checker, clock = _make_checker(check_fn=check_fn, interval=5.0, failure_threshold=3)
+        await checker.start()
+
+        await asyncio.sleep(0)
+        assert checker.status == TriState.UNKNOWN  # 1st failure: below threshold, keep initial UNKNOWN
+
+        await clock.elapse(5.0)
+        assert checker.status == TriState.UNKNOWN  # 2nd failure: still below threshold
+
+        await clock.elapse(5.0)
+        assert checker.status == TriState.FALSE  # 3rd consecutive failure: threshold reached
+
+        checker.stop()
+
+    async def test_success_resets_failure_counter(self):
+        # 2 failures, a success, then 2 more failures: never reaches 3 consecutive, stays TRUE.
+        check_fn = self._flaky_check_fn([False, False, True, False, False])
+        checker, clock = _make_checker(check_fn=check_fn, interval=5.0, failure_threshold=3)
+        await checker.start()
+
+        await asyncio.sleep(0)  # fail 1
+        await clock.elapse(5.0)  # fail 2
+        assert checker._consecutive_failures == 2
+
+        await clock.elapse(5.0)  # success -> reset
+        assert checker.status == TriState.TRUE
+        assert checker._consecutive_failures == 0
+
+        await clock.elapse(5.0)  # fail 1
+        await clock.elapse(5.0)  # fail 2
+        assert checker.status == TriState.TRUE
+        assert checker._consecutive_failures == 2
+
+        checker.stop()
+
+    async def test_on_result_reports_raw_per_check_not_debounced(self):
+        results: list[bool] = []
+        check_fn = self._flaky_check_fn([True, False, False, False])
+        checker, clock = _make_checker(
+            check_fn=check_fn, on_result=lambda s: results.append(s), interval=5.0, failure_threshold=3
+        )
+        await checker.start()
+        await asyncio.sleep(0)
+        for _ in range(3):
+            await clock.elapse(5.0)
+        checker.stop()
+
+        assert results == [True, False, False, False]
+
+    async def test_resume_resets_failure_counter(self):
+        check_fn = self._flaky_check_fn([False, False, False])
+        checker, clock = _make_checker(check_fn=check_fn, interval=5.0, failure_threshold=3)
+        await checker.start()
+        await asyncio.sleep(0)
+        await clock.elapse(5.0)
+        assert checker._consecutive_failures == 2
+
+        checker.resume()
+        assert checker._consecutive_failures == 0
+        checker.stop()
+
+
+class TestRolloutHealthCheckerPreservesImmediateFailure:
+    def test_rollout_checker_forces_failure_threshold_one(self):
+        """Rollout health checker keeps pre-debounce semantics (single failure -> unhealthy)
+        even when handed a config with a larger threshold."""
+        from miles.utils.health_checker import SimpleHealthCheckerConfig, create_rollout_cell_health_checker
+
+        checker = create_rollout_cell_health_checker(
+            cell_id="c0",
+            get_engines=lambda: [object()],
+            config=SimpleHealthCheckerConfig(failure_threshold=5),
+        )
+
+        assert checker._config.failure_threshold == 1
 
 
 class TestNoopHealthChecker:
