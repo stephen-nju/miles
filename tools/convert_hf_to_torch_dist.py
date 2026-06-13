@@ -38,6 +38,11 @@ def get_args():
     args = parse_args(add_conversion_args)
     args = set_default_megatron_args(args)
 
+    # Weight-format conversion is non-FT; the megatron parser lacks the miles FT args
+    # that the shared model-build path (init / model_provider) reads, so default them off.
+    args.debug_deterministic_collective = False
+    args.enable_witness = False
+
     # set to pass megatron validate_args
     args.save_interval = 1
     args.micro_batch_size = 1
