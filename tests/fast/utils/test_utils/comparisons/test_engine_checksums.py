@@ -25,29 +25,49 @@ def _partial(*, rollout_id: int, engine_checksums: list[dict[str, str]]) -> dict
 
 class TestCompareEngineChecksums:
     def test_identical_passes(self, tmp_path: Path) -> None:
-        """Baseline and target with identical per-engine checksums pass."""
-        partials = [_partial(rollout_id=1, engine_checksums=[{"rank0/w": "aaa"}, {"rank0/w": "bbb"}])]
+        """Internally-consistent sides with equal representative checksums pass."""
+        partials = [_partial(rollout_id=1, engine_checksums=[{"rank0/w": "aaa"}, {"rank0/w": "aaa"}])]
         _write_engine_events(tmp_path / "baseline", partials)
         _write_engine_events(tmp_path / "target", partials)
 
         compare_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
 
-    def test_single_tensor_difference_fails(self, tmp_path: Path) -> None:
-        """One differing tensor on one engine fails and names rollout/engine/tensor."""
+    def test_differing_engine_counts_still_pass(self, tmp_path: Path) -> None:
+        """Engine count may differ between sides; only internal agreement + representative equality matter."""
         _write_engine_events(tmp_path / "baseline", [_partial(rollout_id=1, engine_checksums=[{"rank0/w": "aaa"}])])
-        _write_engine_events(tmp_path / "target", [_partial(rollout_id=1, engine_checksums=[{"rank0/w": "zzz"}])])
-
-        with pytest.raises(AssertionError, match=r"rollout 1 engine 0 tensor rank0/w"):
-            compare_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
-
-    def test_engine_count_mismatch_fails(self, tmp_path: Path) -> None:
-        """A rollout whose engine count differs between sides fails closed."""
         _write_engine_events(
-            tmp_path / "baseline", [_partial(rollout_id=1, engine_checksums=[{"rank0/w": "aaa"}, {"rank0/w": "bbb"}])]
+            tmp_path / "target",
+            [_partial(rollout_id=1, engine_checksums=[{"rank0/w": "aaa"}, {"rank0/w": "aaa"}, {"rank0/w": "aaa"}])],
+        )
+
+        compare_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
+
+    def test_baseline_engines_disagree_fails(self, tmp_path: Path) -> None:
+        """If baseline's own engines disagree, the comparison fails (caught by the consistency rule)."""
+        _write_engine_events(
+            tmp_path / "baseline", [_partial(rollout_id=1, engine_checksums=[{"rank0/w": "aaa"}, {"rank0/w": "zzz"}])]
         )
         _write_engine_events(tmp_path / "target", [_partial(rollout_id=1, engine_checksums=[{"rank0/w": "aaa"}])])
 
-        with pytest.raises(AssertionError, match="engine count differs"):
+        with pytest.raises(AssertionError, match="Baseline engines disagree"):
+            compare_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
+
+    def test_target_engines_disagree_fails(self, tmp_path: Path) -> None:
+        """If target's own engines disagree, the comparison fails."""
+        _write_engine_events(tmp_path / "baseline", [_partial(rollout_id=1, engine_checksums=[{"rank0/w": "aaa"}])])
+        _write_engine_events(
+            tmp_path / "target", [_partial(rollout_id=1, engine_checksums=[{"rank0/w": "aaa"}, {"rank0/w": "zzz"}])]
+        )
+
+        with pytest.raises(AssertionError, match="Target engines disagree"):
+            compare_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
+
+    def test_representative_mismatch_fails(self, tmp_path: Path) -> None:
+        """Internally-consistent sides whose representatives differ fail and name the tensor."""
+        _write_engine_events(tmp_path / "baseline", [_partial(rollout_id=1, engine_checksums=[{"rank0/w": "aaa"}])])
+        _write_engine_events(tmp_path / "target", [_partial(rollout_id=1, engine_checksums=[{"rank0/w": "zzz"}])])
+
+        with pytest.raises(AssertionError, match=r"key rank0/w"):
             compare_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
 
     def test_missing_rollout_fails(self, tmp_path: Path) -> None:
@@ -62,17 +82,6 @@ class TestCompareEngineChecksums:
         _write_engine_events(tmp_path / "target", [_partial(rollout_id=1, engine_checksums=[{"rank0/w": "aaa"}])])
 
         with pytest.raises(AssertionError, match="rollout_id sets differ"):
-            compare_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
-
-    def test_tensor_name_set_mismatch_fails(self, tmp_path: Path) -> None:
-        """An engine whose tensor-name set differs fails before per-value comparison."""
-        _write_engine_events(
-            tmp_path / "baseline",
-            [_partial(rollout_id=1, engine_checksums=[{"rank0/w": "aaa", "rank0/b": "bbb"}])],
-        )
-        _write_engine_events(tmp_path / "target", [_partial(rollout_id=1, engine_checksums=[{"rank0/w": "aaa"}])])
-
-        with pytest.raises(AssertionError, match="tensor-name sets differ"):
             compare_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
 
     def test_empty_baseline_fails(self, tmp_path: Path) -> None:
