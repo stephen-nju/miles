@@ -1009,9 +1009,7 @@ class TestMaybeLogEngineWeightChecksums:
     async def test_enabled_logs_one_event_per_engine(self):
         """With the flag on, each surviving engine produces one EngineWeightChecksumEvent."""
         rollout_mgr = MagicMock()
-        rollout_mgr.check_weights.remote = AsyncMock(
-            return_value=_checksum_response([{"w": "e0"}, {"w": "e1"}])
-        )
+        rollout_mgr.check_weights.remote = AsyncMock(return_value=_checksum_response([{"w": "e0"}, {"w": "e1"}]))
         group = self._make_group_with_args(check_flag=True, rollout_manager=rollout_mgr)
 
         with patch("miles.ray.train.group.is_event_logger_initialized", return_value=True), patch(

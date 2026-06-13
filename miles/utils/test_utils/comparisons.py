@@ -365,7 +365,11 @@ def compare_engine_checksums(baseline_dir: str, target_dir: str) -> None:
                     f"baseline={b_checksums[name]} != target={t_checksums[name]}"
                 )
 
-    assert not issues, "Engine weight checksum baseline-vs-target comparison found " + f"{len(issues)} issue(s):\n" + "\n".join(f"  - {i}" for i in issues)
+    assert not issues, (
+        "Engine weight checksum baseline-vs-target comparison found "
+        + f"{len(issues)} issue(s):\n"
+        + "\n".join(f"  - {i}" for i in issues)
+    )
     print(f"Engine weight checksum comparison passed: {len(baseline_by_key)} (rollout, engine) pair(s) compared")
 
 

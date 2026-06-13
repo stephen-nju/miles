@@ -2,11 +2,7 @@ from collections import defaultdict
 from collections.abc import Iterable
 from typing import Any
 
-from miles.utils.event_analyzer.rules.checksum_compare import (
-    ChecksumMismatchIssue,
-    compare_flat_dicts,
-    flatten_nested,
-)
+from miles.utils.event_analyzer.rules.checksum_compare import ChecksumMismatchIssue, compare_flat_dicts, flatten_nested
 from miles.utils.event_logger.models import Event, LocalWeightChecksumEvent
 from miles.utils.process_identity import TrainProcessIdentity
 
