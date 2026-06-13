@@ -14,6 +14,7 @@ from miles.utils.test_utils.comparisons import (
     compare_dumps,
     compare_metrics,
 )
+from miles.utils.test_utils.reconfigure_assertions import ReconfigureInfo, assert_reconfigure_events
 
 NUM_PHASE_A_STEPS: int = 1
 # --num-rollout value; phase_b resumes from the phase_a ckpt and executes rollouts
@@ -33,6 +34,19 @@ _DETERMINISTIC_ACTIONS: list[dict] = [
     {"at_rollout": NUM_PHASE_A_STEPS + 1, "action": "stop_cell_at_end", "cell_index": -1},
     {"at_rollout": NUM_PHASE_A_STEPS + 1, "action": "start_cell_at_end", "cell_index": -1},
 ]
+
+
+def _expected_reconfigures(*, is_target: bool, phase: str, num_cells: int) -> list[ReconfigureInfo]:
+    if not (is_target and phase == "phase_b"):
+        return []
+    return [
+        ReconfigureInfo(
+            rollout_id=NUM_PHASE_A_STEPS + 2,
+            src_cell_index=0,
+            healed_cell_indices=[num_cells - 1],
+            alive_cell_indices_after=list(range(num_cells)),
+        ),
+    ]
 
 
 def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enable_dumper: bool = True) -> str:
@@ -80,6 +94,13 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
     # This requires the run to be fully deterministic on both sides.
     # Any divergence is a real bug and must be fixed at the source, never hidden by
     # loosening these thresholds.
+    for side in ["baseline", "target"]:
+        for phase in PHASES:
+            assert_reconfigure_events(
+                Path(f"{dump_dir}/{side}/{phase}/events"),
+                expected=_expected_reconfigures(is_target=side == "target", phase=phase, num_cells=mode.num_cells),
+            )
+
     grad_norm_key = "train/grad_norm"
     compare_metrics(
         baseline_dir=f"{dump_dir}/baseline/phase_b",
