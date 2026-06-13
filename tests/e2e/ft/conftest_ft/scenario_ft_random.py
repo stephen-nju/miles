@@ -23,6 +23,13 @@ app: typer.Typer = typer.Typer()
 
 TEST_NAME: str = "trainer_ft_random"
 
+# Stop injecting faults this many rollouts before the end so the tail runs
+# fault-free, guaranteeing the soak ends at full cell membership. The margin
+# absorbs the poll+inject slippage between observing a rollout and the fault
+# landing (at most the next rollout), so the last heal lands no later than the
+# final rollout — see tests/e2e/ft/README.md for the full argument.
+COOLDOWN_ROLLOUTS: int = 3
+
 
 @app.command(name="run")
 def run_ci(
@@ -61,6 +68,7 @@ def run_ci(
     injector = spawn_fault_injector(
         seed=seed,
         mean_interval_seconds=mean_interval,
+        stop_at_rollout_id=num_steps - COOLDOWN_ROLLOUTS,
     )
 
     try:
