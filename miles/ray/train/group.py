@@ -65,6 +65,7 @@ class RayTrainGroup:
         num_gpus_per_actor: float = 1,
         role: str,
         with_ref: bool,
+        with_opd_teacher: bool = False,
     ) -> None:
         self.args = args
         self._rollout_manager = rollout_manager
@@ -93,6 +94,7 @@ class RayTrainGroup:
                 args=args,
                 role=role,
                 with_ref=with_ref,
+                with_opd_teacher=with_opd_teacher,
                 cell_index=cell_index,
                 rollout_manager=rollout_manager,
                 actor_factory=lambda _pg=cell_pg, _ci=cell_index: allocate_gpus_for_actor(

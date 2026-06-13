@@ -27,4 +27,6 @@ KNOWN_LABELS: dict[str, str] = {
     "lora": "LoRA training tests",
     "precision": "Numerical precision parity tests",
     "ft": "Fault-tolerance trainer tests (indep_dp healing / recovery)",
+    "weight-update": "Weight update tests",
+    "replay": "Routing / indexer replay tests",
 }

@@ -63,10 +63,11 @@ class FSDPTrainRayActor(TrainRayActor):
         role: str,
         *,
         with_ref: bool = False,
+        with_opd_teacher: bool = False,
         recv_ckpt_src_rank: int | None = None,
         indep_dp_info: IndepDPInfo,
-    ) -> int | None:
-        super().init(args, role, with_ref)
+    ) -> int | None:  # type: ignore[override]
+        super().init(args, role, with_ref, with_opd_teacher=with_opd_teacher)
 
         # Unsupported
         assert recv_ckpt_src_rank is None

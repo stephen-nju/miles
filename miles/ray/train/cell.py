@@ -32,6 +32,7 @@ class RayTrainCell:
         args,
         role: str,
         with_ref: bool,
+        with_opd_teacher: bool = False,
         cell_index: int,
         actor_factory: ActorFactory,
         rollout_manager: object | None,
@@ -41,6 +42,7 @@ class RayTrainCell:
         self.cell_index = cell_index
         self.role = role
         self.with_ref = with_ref
+        self.with_opd_teacher = with_opd_teacher
         self.rollout_manager = rollout_manager
         self.actor_factory = actor_factory
         self.health_checker = health_checker
@@ -63,6 +65,7 @@ class RayTrainCell:
             args=self.args,
             role=self.role,
             with_ref=self.with_ref,
+            with_opd_teacher=self.with_opd_teacher,
             indep_dp_info=indep_dp_info,
             recv_ckpt_src_rank=recv_ckpt_src_rank,
         )
