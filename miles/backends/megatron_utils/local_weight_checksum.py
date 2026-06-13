@@ -19,7 +19,7 @@ from megatron.core.optimizer.optimizer import MegatronOptimizer
 from miles.backends.megatron_utils.ci_utils import _hash_tensor_bytes
 
 if TYPE_CHECKING:
-    from miles.utils.event_logger.models import TrainEngineLocalWeightChecksumState, OptimizerStateInfo
+    from miles.utils.event_logger.models import OptimizerStateInfo, TrainEngineLocalWeightChecksumState
 
 logger = logging.getLogger(__name__)
 
