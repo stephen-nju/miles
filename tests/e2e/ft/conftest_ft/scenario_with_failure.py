@@ -14,6 +14,7 @@ from miles.utils.test_utils.comparisons import (
     compare_dumps,
     compare_metrics,
 )
+from miles.utils.test_utils.reconfigure_assertions import ExpectedReconfigure, assert_reconfigure_events
 
 NUM_PHASE_A_STEPS: int = 1
 NUM_PHASE_B_STEPS: int = 4
@@ -65,6 +66,32 @@ _WITH_FAILURE_ACTIONS: list[dict] = [
 ]
 
 
+# Healing-witness expectations: the exact CellReconfigureEvent sequence per run, pinned
+# to the CURRENT phase timeline (FT actions only run on the target side, in phase_b).
+# If the phase timeline changes (e.g. phase_a starts running the same FT actions),
+# update this table.
+def _expected_reconfigures(*, is_target: bool, phase: str, num_cells: int) -> list[ExpectedReconfigure]:
+    if not (is_target and phase == "phase_b"):
+        return []
+    return [
+        # Shrink on the retry of the crashed rollout: the errored last cell is dropped.
+        # This is also the positive proof that the fault injection actually fired.
+        ExpectedReconfigure(
+            rollout_id=NUM_PHASE_A_STEPS + 1,
+            src_cell_index=None,
+            healed_cell_indices=[],
+            alive_cell_indices_after=list(range(num_cells - 1)),
+        ),
+        # Healing of the stop+start'ed last cell, with cell 0 as the ckpt source.
+        ExpectedReconfigure(
+            rollout_id=NUM_PHASE_A_STEPS + 2,
+            src_cell_index=0,
+            healed_cell_indices=[num_cells - 1],
+            alive_cell_indices_after=list(range(num_cells)),
+        ),
+    ]
+
+
 def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enable_dumper: bool = True) -> str:
     is_phase_a: bool = dump_dir.endswith("phase_a")
     base = get_common_train_args(mode, dump_dir=dump_dir, num_steps=NUM_PHASE_B_STEPS, enable_dumper=enable_dumper)
@@ -101,6 +128,16 @@ def _build_target_args(mode: FTTestMode, dump_dir: str, enable_dumper: bool = Tr
 
 
 def _compare(dump_dir: str, mode: FTTestMode) -> None:
+    # Healing witness first: positively prove the fault fired (shrink) and healing ran
+    # (healing event) before comparing numerics — comparing two fault-free runs must
+    # never pass again.
+    for side in ["baseline", "target"]:
+        for phase in PHASES:
+            assert_reconfigure_events(
+                Path(f"{dump_dir}/{side}/{phase}/events"),
+                expected=_expected_reconfigures(is_target=side == "target", phase=phase, num_cells=mode.num_cells),
+            )
+
     compare_metrics(
         baseline_dir=f"{dump_dir}/baseline/phase_b",
         target_dir=f"{dump_dir}/target/phase_b",

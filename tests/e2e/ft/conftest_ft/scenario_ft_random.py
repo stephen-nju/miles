@@ -2,6 +2,7 @@
 # WARNING: Do NOT relax any assert logic in this file. All assertions must remain strict.
 
 
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -15,6 +16,8 @@ from tests.e2e.ft.conftest_ft.execution import (
 )
 from tests.e2e.ft.conftest_ft.fault_injection import CONTROL_SERVER_PORT, MEAN_INTERVAL_SECONDS, spawn_fault_injector
 from tests.e2e.ft.conftest_ft.modes import FTTestMode, resolve_mode
+
+from miles.utils.test_utils.reconfigure_assertions import assert_soak_reconfigure_events
 
 app: typer.Typer = typer.Typer()
 
@@ -58,9 +61,19 @@ def run_ci(
     injector = spawn_fault_injector(seed=seed, mean_interval_seconds=mean_interval)
 
     try:
-        run_training(train_args=train_args, mode=ft_mode)
+        # Pass dump_dir so run_training clears it: stale events from a previous run
+        # would corrupt the healing-witness assertion below.
+        run_training(train_args=train_args, mode=ft_mode, dump_dir=dump_dir)
     finally:
         injector.stop_and_join(timeout_seconds=5)
+
+    # Healing witness: if the injector landed any fault, healing must have run, and the
+    # last reconfigure must have restored full cell membership.
+    assert_soak_reconfigure_events(
+        Path(dump_dir) / "events",
+        num_successful_injections=injector.num_successful_injections,
+        num_cells=ft_mode.num_cells,
+    )
 
     print(f"Random failure soak test PASSED (seed={seed}, steps={num_steps})")
 
