@@ -64,8 +64,8 @@ class DummyTrainActor:
     def save_model(self, *args: Any, **kwargs: Any) -> None:
         self._record("save_model", args, kwargs)
 
-    def update_weights(self) -> None:
-        self._record("update_weights", (), {})
+    def update_weights(self, *args: Any, **kwargs: Any) -> None:
+        self._record("update_weights", args, kwargs)
 
     def set_heartbeat_fail(self, fail: bool) -> None:
         self._heartbeat_fail = fail

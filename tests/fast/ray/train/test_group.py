@@ -1,5 +1,8 @@
+import json
 from collections.abc import Callable
+from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -20,6 +23,7 @@ def _make_mock_args(
     indep_dp: bool = True,
     enable_witness: bool = False,
     gpus_per_cell: int = 1,
+    ci_dump_engine_weight_checksums: str | None = None,
 ) -> SimpleNamespace:
     # Use SimpleNamespace (not MagicMock) so the args object is picklable. RayTrainCell.init
     # passes self.args through Ray to the remote actor; pickling a MagicMock blows the
@@ -33,7 +37,7 @@ def _make_mock_args(
         trainer_heartbeat_checker_max_heartbeat_age=90.0,
         trainer_heartbeat_checker_first_wait=300.0,
         ci_ft_test_actions=None,
-        ci_dump_engine_weight_checksums=None,
+        ci_dump_engine_weight_checksums=ci_dump_engine_weight_checksums,
         # compute_megatron_world_size_except_dp(args) = TP * PP * CP. Set CP to
         # gpus_per_cell so RayTrainGroup computes num_cells correctly.
         tensor_model_parallel_size=1,
@@ -64,11 +68,16 @@ def _make_group(
     num_cells: int = 3,
     actor_count_per_cell: int = 1,
     rollout_manager: object | None = None,
+    ci_dump_engine_weight_checksums: str | None = None,
 ) -> RayTrainGroup:
     """Create a RayTrainGroup through real __init__ with mocked pg and actor factory."""
     total_gpus = num_cells * actor_count_per_cell
     return RayTrainGroup(
-        args=_make_mock_args(indep_dp=True, gpus_per_cell=actor_count_per_cell),
+        args=_make_mock_args(
+            indep_dp=True,
+            gpus_per_cell=actor_count_per_cell,
+            ci_dump_engine_weight_checksums=ci_dump_engine_weight_checksums,
+        ),
         num_nodes=1,
         num_gpus_per_node=total_gpus,
         pg=(MagicMock(), list(range(total_gpus)), list(range(total_gpus))),
@@ -856,6 +865,60 @@ class TestAllocateWitnessInfo:
         assert result is not None
         assert len(result.witness_ids) == 3
         assert isinstance(result.stale_ids, list)
+
+
+def _make_async_remote(fn: Callable[..., Any]) -> SimpleNamespace:
+    """Wrap a sync fn as a .remote(...) returning an awaitable, like a ray actor method."""
+
+    async def _run(*args: Any, **kwargs: Any) -> Any:
+        return fn(*args, **kwargs)
+
+    return SimpleNamespace(remote=lambda *args, **kwargs: _run(*args, **kwargs))
+
+
+class _FakeUpdateWeightsRolloutManager:
+    """Minimal rollout-manager actor-handle stand-in for update_weights tests."""
+
+    def __init__(self, *, checksum_result: list | None = None) -> None:
+        self.check_weights_calls: list[dict] = []
+
+        self.get_updatable_engines_and_lock = _make_async_remote(lambda: {"engines": []})
+        self.health_monitoring_pause = _make_async_remote(lambda: None)
+
+        def _check_weights(action: str) -> list:
+            self.check_weights_calls.append({"action": action})
+            return checksum_result
+
+        self.check_weights = _make_async_remote(_check_weights)
+
+
+class TestUpdateWeightsEngineChecksumDump:
+    async def test_no_checksum_call_when_flag_unset(self):
+        """update_weights never checksums engines when --ci-dump-engine-weight-checksums is unset (default)."""
+        manager = _FakeUpdateWeightsRolloutManager()
+        group = await _make_alive_group(num_cells=2, rollout_manager=manager)
+
+        await group.update_weights(rollout_id=1)
+
+        assert group._engine_checksum_dumper is None
+        assert manager.check_weights_calls == []
+
+    async def test_dumps_checksums_per_engine_when_flag_set(self, tmp_path: Path):
+        """update_weights checksums every engine and writes one JSON per engine under rollout_<id>."""
+        response = {"success": True, "message": "ok", "ranks": [{"checksums": {"w": "aa"}, "parallelism_info": {}}]}
+        manager = _FakeUpdateWeightsRolloutManager(checksum_result=[[[response, response]]])
+        group = await _make_alive_group(
+            num_cells=2,
+            rollout_manager=manager,
+            ci_dump_engine_weight_checksums=str(tmp_path),
+        )
+
+        await group.update_weights(rollout_id=2)
+
+        assert manager.check_weights_calls == [{"action": "checksum"}]
+        rollout_dir = tmp_path / "rollout_2"
+        assert sorted(p.name for p in rollout_dir.iterdir()) == ["engine_0.json", "engine_1.json"]
+        assert json.loads((rollout_dir / "engine_0.json").read_text()) == response
 
 
 class TestLogStepEndEvent:
