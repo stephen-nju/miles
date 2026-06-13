@@ -158,9 +158,6 @@ class SimpleHealthChecker(BaseHealthChecker):
                     self._status = TriState.TRUE
                 else:
                     self._consecutive_failures += 1
-                    # Only report unhealthy after failure_threshold consecutive failures,
-                    # so a single transient RPC blip does not recycle a live cell. Until
-                    # the threshold is reached the previous status is retained.
                     if self._consecutive_failures >= self._config.failure_threshold:
                         self._status = TriState.FALSE
 
