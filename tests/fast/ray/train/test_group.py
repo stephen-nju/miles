@@ -985,7 +985,7 @@ class TestMaybeLogEngineWeightChecksums:
         group = _make_group(num_cells=1, rollout_manager=rollout_mgr)
 
         with patch("miles.ray.train.group.is_event_logger_initialized", return_value=False):
-            await group._maybe_log_engine_weight_checksums(rollout_id=0)
+            await group._maybe_log_inference_engine_weight_checksums(rollout_id=0)
 
         rollout_mgr.check_weights.assert_not_called()
 
@@ -1001,7 +1001,7 @@ class TestMaybeLogEngineWeightChecksums:
             mock_logger = MagicMock()
             mock_get_logger.return_value = mock_logger
 
-            await group._maybe_log_engine_weight_checksums(rollout_id=None)
+            await group._maybe_log_inference_engine_weight_checksums(rollout_id=None)
 
         mock_logger.log.assert_called_once()
         logged = mock_logger.log.call_args.args[1]
@@ -1015,7 +1015,7 @@ class TestMaybeLogEngineWeightChecksums:
         group.args.debug_train_only = True
 
         with patch("miles.ray.train.group.is_event_logger_initialized", return_value=True):
-            await group._maybe_log_engine_weight_checksums(rollout_id=0)
+            await group._maybe_log_inference_engine_weight_checksums(rollout_id=0)
 
         rollout_mgr.check_weights.assert_not_called()
 
@@ -1031,7 +1031,7 @@ class TestMaybeLogEngineWeightChecksums:
             mock_logger = MagicMock()
             mock_get_logger.return_value = mock_logger
 
-            await group._maybe_log_engine_weight_checksums(rollout_id=3)
+            await group._maybe_log_inference_engine_weight_checksums(rollout_id=3)
 
         rollout_mgr.check_weights.remote.assert_awaited_once_with("checksum")
         mock_logger.log.assert_called_once()

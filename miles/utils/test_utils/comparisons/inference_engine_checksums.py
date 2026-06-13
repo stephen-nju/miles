@@ -1,21 +1,21 @@
 from pathlib import Path
 
-from miles.utils.event_analyzer.rules import engine_weight_checksum_consistency
+from miles.utils.event_analyzer.rules import inference_engine_weight_checksum_consistency
 from miles.utils.event_analyzer.rules.checksum_compare import ChecksumMismatchIssue, compare_flat_dicts
 from miles.utils.event_logger.logger import read_events
 from miles.utils.event_logger.models import InferenceEngineWeightChecksumEvent
 
 
-def compare_engine_checksums(baseline_dir: str, target_dir: str) -> None:
-    baseline = _read_engine_checksum_events(Path(baseline_dir))
-    target = _read_engine_checksum_events(Path(target_dir))
+def compare_inference_engine_checksums(baseline_dir: str, target_dir: str) -> None:
+    baseline = _read_inference_engine_checksum_events(Path(baseline_dir))
+    target = _read_inference_engine_checksum_events(Path(target_dir))
     assert baseline, f"No InferenceEngineWeightChecksumEvents found in baseline dir: {baseline_dir}"
     assert target, f"No InferenceEngineWeightChecksumEvents found in target dir: {target_dir}"
 
     # Each side's engines must already agree internally (same invariant as the production rule), so
     # one representative engine per rollout then proves baseline == target regardless of engine count.
-    assert not engine_weight_checksum_consistency.check(baseline), "Baseline engines disagree with each other"
-    assert not engine_weight_checksum_consistency.check(target), "Target engines disagree with each other"
+    assert not inference_engine_weight_checksum_consistency.check(baseline), "Baseline engines disagree with each other"
+    assert not inference_engine_weight_checksum_consistency.check(target), "Target engines disagree with each other"
 
     baseline_by_rollout = _checksums_by_rollout_id(baseline)
     target_by_rollout = _checksums_by_rollout_id(target)
@@ -57,7 +57,7 @@ def _checksums_by_rollout_id(events: list[InferenceEngineWeightChecksumEvent]) -
     return by_rollout
 
 
-def _read_engine_checksum_events(dump_dir: Path) -> list[InferenceEngineWeightChecksumEvent]:
+def _read_inference_engine_checksum_events(dump_dir: Path) -> list[InferenceEngineWeightChecksumEvent]:
     """Read all InferenceEngineWeightChecksumEvents from the events directory."""
     events_dir: Path = dump_dir / "events"
     if not events_dir.exists():

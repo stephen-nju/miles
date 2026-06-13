@@ -208,7 +208,7 @@ generated samples are discarded after the fact), update_weights after the degrad
 and after healing, and health-monitor pause/resume — i.e. the whole
 crash→retry→heal→weight-sync path. The post-healing update_weights is now consumed:
 real_rollout mode asserts the target pushed bitwise-identical engine weights to the
-baseline (see "engine weight checksum" below). Injected rollouts' dump comparison gives a
+baseline (see "inference engine weight checksum" below). Injected rollouts' dump comparison gives a
 `max_abs <= 3e-3` floor to the **measured noisy grad families only** (decoder-layer
 QK-norms, folded `layer_norm_weight`s, and the attention/MLP weight matrices): the
 training data is bitwise-identical, but the target's weights carry the fault-inherent ulp
@@ -292,10 +292,10 @@ Bitwise verification: --use-fault-tolerance --ft-components train auto-enables
 --save-local-weight-checksum and --enable-event-analyzer. The event_analyzer
 cross_replica_weight_checksum rule checks cell-to-cell bitwise equality after healing.
 
-Engine weight checksum (real_rollout mode only): each update_weights logs one
+Inference engine weight checksum (real_rollout mode only): each update_weights logs one
 InferenceEngineWeightChecksumEvent per rollout (all engines). _compare asserts per phase that baseline
 and target pushed bitwise-identical weights for every (rollout, engine) pair; the
-event_analyzer engine_weight_checksum_consistency rule independently checks that all engines
+event_analyzer inference_engine_weight_checksum_consistency rule independently checks that all engines
 of a rollout agree (the production-facing function A).
 
 Healing witness: each target phase heals once, so each target event dir must contain

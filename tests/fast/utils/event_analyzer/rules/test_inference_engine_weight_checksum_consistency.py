@@ -1,8 +1,8 @@
-"""Tests for event_analyzer rules/engine_weight_checksum_consistency."""
+"""Tests for event_analyzer rules/inference_engine_weight_checksum_consistency."""
 
 from datetime import datetime, timezone
 
-from miles.utils.event_analyzer.rules.engine_weight_checksum_consistency import check
+from miles.utils.event_analyzer.rules.inference_engine_weight_checksum_consistency import check
 from miles.utils.event_logger.models import InferenceEngineWeightChecksumEvent
 from miles.utils.process_identity import MainProcessIdentity
 

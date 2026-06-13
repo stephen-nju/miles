@@ -1,4 +1,4 @@
-"""Tests for test_utils.comparisons.engine_checksums.compare_engine_checksums."""
+"""Tests for test_utils.comparisons.inference_engine_checksums.compare_inference_engine_checksums."""
 
 from pathlib import Path
 from typing import Any
@@ -8,7 +8,7 @@ import pytest
 from miles.utils.event_logger.logger import EventLogger
 from miles.utils.event_logger.models import InferenceEngineWeightChecksumEvent
 from miles.utils.process_identity import MainProcessIdentity
-from miles.utils.test_utils.comparisons.engine_checksums import compare_engine_checksums
+from miles.utils.test_utils.comparisons.inference_engine_checksums import compare_inference_engine_checksums
 
 
 def _write_engine_events(side_dir: Path, partials: list[dict[str, Any]]) -> None:
@@ -23,14 +23,14 @@ def _partial(*, rollout_id: int, engine_checksums: list[dict[str, str]]) -> dict
     return dict(rollout_id=rollout_id, engine_checksums=engine_checksums)
 
 
-class TestCompareEngineChecksums:
+class TestCompareInferenceEngineChecksums:
     def test_identical_passes(self, tmp_path: Path) -> None:
         """Internally-consistent sides with equal representative checksums pass."""
         partials = [_partial(rollout_id=1, engine_checksums=[{"rank0/w": "aaa"}, {"rank0/w": "aaa"}])]
         _write_engine_events(tmp_path / "baseline", partials)
         _write_engine_events(tmp_path / "target", partials)
 
-        compare_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
+        compare_inference_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
 
     def test_differing_engine_counts_still_pass(self, tmp_path: Path) -> None:
         """Engine count may differ between sides; only internal agreement + representative equality matter."""
@@ -40,7 +40,7 @@ class TestCompareEngineChecksums:
             [_partial(rollout_id=1, engine_checksums=[{"rank0/w": "aaa"}, {"rank0/w": "aaa"}, {"rank0/w": "aaa"}])],
         )
 
-        compare_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
+        compare_inference_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
 
     def test_baseline_engines_disagree_fails(self, tmp_path: Path) -> None:
         """If baseline's own engines disagree, the comparison fails (caught by the consistency rule)."""
@@ -50,7 +50,7 @@ class TestCompareEngineChecksums:
         _write_engine_events(tmp_path / "target", [_partial(rollout_id=1, engine_checksums=[{"rank0/w": "aaa"}])])
 
         with pytest.raises(AssertionError, match="Baseline engines disagree"):
-            compare_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
+            compare_inference_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
 
     def test_target_engines_disagree_fails(self, tmp_path: Path) -> None:
         """If target's own engines disagree, the comparison fails."""
@@ -60,7 +60,7 @@ class TestCompareEngineChecksums:
         )
 
         with pytest.raises(AssertionError, match="Target engines disagree"):
-            compare_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
+            compare_inference_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
 
     def test_representative_mismatch_fails(self, tmp_path: Path) -> None:
         """Internally-consistent sides whose representatives differ fail and name the tensor."""
@@ -68,7 +68,7 @@ class TestCompareEngineChecksums:
         _write_engine_events(tmp_path / "target", [_partial(rollout_id=1, engine_checksums=[{"rank0/w": "zzz"}])])
 
         with pytest.raises(AssertionError, match=r"key rank0/w"):
-            compare_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
+            compare_inference_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
 
     def test_missing_rollout_fails(self, tmp_path: Path) -> None:
         """A rollout present only on one side fails closed."""
@@ -82,7 +82,7 @@ class TestCompareEngineChecksums:
         _write_engine_events(tmp_path / "target", [_partial(rollout_id=1, engine_checksums=[{"rank0/w": "aaa"}])])
 
         with pytest.raises(AssertionError, match="rollout_id sets differ"):
-            compare_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
+            compare_inference_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
 
     def test_empty_baseline_fails(self, tmp_path: Path) -> None:
         """No baseline events fails closed rather than vacuously passing."""
@@ -90,4 +90,4 @@ class TestCompareEngineChecksums:
         _write_engine_events(tmp_path / "target", [_partial(rollout_id=1, engine_checksums=[{"rank0/w": "aaa"}])])
 
         with pytest.raises(AssertionError, match="No InferenceEngineWeightChecksumEvents found in baseline"):
-            compare_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
+            compare_inference_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
