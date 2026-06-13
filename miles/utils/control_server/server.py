@@ -11,7 +11,14 @@ from starlette.responses import JSONResponse
 
 from miles.ray.train.group import RayTrainGroup
 from miles.utils.control_server.handles import _ActorCellHandle, _CellHandle, _RolloutCellHandle
-from miles.utils.control_server.models import Cell, CellList, CellPatch, FaultInjection, K8sStatus, _OkResponse
+from miles.utils.control_server.models import (
+    Cell,
+    CellList,
+    CellPatch,
+    FaultInjection,
+    K8sStatus,
+    _OkResponse,
+)
 from miles.utils.control_server.progress import TrainingProgress
 from miles.utils.control_server.registry import _CellRegistry
 
