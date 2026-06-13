@@ -51,6 +51,10 @@ def _build_actions(phase_start_rollout_id: int) -> list[dict]:
 
 def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enable_dumper: bool = True) -> str:
     phase_name: str = dump_dir.rsplit("/", 1)[-1]
+    assert phase_name in PHASE_START_ROLLOUT_IDS, (
+        f"dump dir {dump_dir!r} does not end in a phase name; this multi-phase scenario "
+        f"requires --phase ({'|'.join(PHASE_START_ROLLOUT_IDS)})"
+    )
     phase_start_rollout_id: int = PHASE_START_ROLLOUT_IDS[phase_name]
 
     base = get_common_train_args(mode, dump_dir=dump_dir, num_steps=TOTAL_NUM_ROLLOUTS, enable_dumper=enable_dumper)
