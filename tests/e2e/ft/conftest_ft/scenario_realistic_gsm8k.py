@@ -23,9 +23,6 @@ _ROLLOUT_GPUS: int = 4
 # Must stay identical to the threshold asserted by the no-fault baseline
 # tests/e2e/long/test_qwen2.5_0.5B_gsm8k.py: fault recovery must not cost accuracy.
 _DEFAULT_METRIC_THRESHOLD: float = 0.55
-# Stop injecting this many rollouts before the end so the tail recovers fault-free
-# (mirrors scenario_ft_random; here it keeps the final accuracy eval undisturbed).
-_COOLDOWN_ROLLOUTS: int = 3
 
 
 @app.command(name="run")
@@ -44,11 +41,7 @@ def run_ci(
 
     train_args = _get_gsm8k_train_args(seed=seed, num_rollout=num_rollout, metric_threshold=metric_threshold)
 
-    injector = spawn_fault_injector(
-        seed=seed,
-        mean_interval_seconds=mean_interval,
-        stop_at_rollout_id=num_rollout - _COOLDOWN_ROLLOUTS,
-    )
+    injector = spawn_fault_injector(seed=seed, mean_interval_seconds=mean_interval)
 
     try:
         U.execute_train(

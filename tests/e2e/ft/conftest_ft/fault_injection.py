@@ -27,7 +27,6 @@ def run_fault_injection_loop(
     base_url: str,
     seed: int,
     mean_interval_seconds: float,
-    stop_at_rollout_id: int,
     stop_event: threading.Event,
     on_successful_injection: Callable[[], None],
 ) -> None:
@@ -37,12 +36,6 @@ def run_fault_injection_loop(
     while not stop_event.is_set():
         delay = rng.expovariate(1.0 / mean_interval_seconds)
         if stop_event.wait(timeout=delay):
-            break
-
-        # Stop injecting once training reaches the cooldown tail so the final
-        # rollouts run fault-free, guaranteeing the soak ends at full membership.
-        if _reached_cooldown(base_url=base_url, stop_at_rollout_id=stop_at_rollout_id):
-            logger.info("Reached cooldown at rollout >= %d, stopping fault injection", stop_at_rollout_id)
             break
 
         elapsed = time.monotonic() - last_injection_at
@@ -98,20 +91,8 @@ def run_fault_injection_loop(
             logger.info("Failed to inject fault into %s", cell_name, exc_info=True)
 
 
-def _reached_cooldown(*, base_url: str, stop_at_rollout_id: int) -> bool:
-    try:
-        resp = requests.get(f"{base_url}/api/v1/progress", timeout=5)
-        resp.raise_for_status()
-        current_rollout_id = resp.json()["current_rollout_id"]
-    except Exception:
-        logger.info("Failed to read training progress from control server", exc_info=True)
-        return False
-
-    return current_rollout_id is not None and current_rollout_id >= stop_at_rollout_id
-
-
 class FaultInjectorHandle:
-    def __init__(self, *, base_url: str, seed: int, mean_interval_seconds: float, stop_at_rollout_id: int) -> None:
+    def __init__(self, *, base_url: str, seed: int, mean_interval_seconds: float) -> None:
         self.num_successful_injections: int = 0
         self._stop_event = threading.Event()
         self._thread = threading.Thread(
@@ -120,7 +101,6 @@ class FaultInjectorHandle:
                 "base_url": base_url,
                 "seed": seed,
                 "mean_interval_seconds": mean_interval_seconds,
-                "stop_at_rollout_id": stop_at_rollout_id,
                 "stop_event": self._stop_event,
                 "on_successful_injection": self._on_successful_injection,
             },
@@ -139,15 +119,8 @@ class FaultInjectorHandle:
         self.num_successful_injections += 1
 
 
-def spawn_fault_injector(
-    *, seed: int, mean_interval_seconds: float, stop_at_rollout_id: int
-) -> FaultInjectorHandle:
+def spawn_fault_injector(*, seed: int, mean_interval_seconds: float) -> FaultInjectorHandle:
     base_url = f"http://localhost:{CONTROL_SERVER_PORT}"
-    handle = FaultInjectorHandle(
-        base_url=base_url,
-        seed=seed,
-        mean_interval_seconds=mean_interval_seconds,
-        stop_at_rollout_id=stop_at_rollout_id,
-    )
+    handle = FaultInjectorHandle(base_url=base_url, seed=seed, mean_interval_seconds=mean_interval_seconds)
     handle.start()
     return handle
