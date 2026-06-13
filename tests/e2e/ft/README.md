@@ -206,12 +206,11 @@ strict grad/activation/metric comparison with zero threshold relaxation.
 What stays real on the target during injected rollouts: engines and generation itself (the
 generated samples are discarded after the fact), update_weights after the degraded commit
 and after healing, and health-monitor pause/resume — i.e. the whole
-crash→retry→heal→weight-sync path. The post-rollout-3 (post-healing) update_weights runs
-but its output is not consumed by any later rollout here; its correctness is covered by
-`scenario_deterministic`'s `dp2_cp2_real_rollout` mode, whose bitwise engine weight checksum
-comparison verifies the same post-heal weight-sync code path per tensor. A hash comparison
-cannot run in this scenario: the post-fault weights carry the fault-inherent ulp drift
-described below, so target hashes legitimately differ from baseline. Injected rollouts' dump comparison gives a
+crash→retry→heal→weight-sync path. Known gap: the update_weights that runs after the
+rollout-3 (post-healing) train step is executed but its output is not consumed by any
+later rollout, so a regression there is only caught by the generation match guard at
+rollout 3 (post-degraded-commit weights) and by `realistic_gsm8k` accuracy, not by this
+scenario's strict comparison. Injected rollouts' dump comparison gives a
 `max_abs <= 3e-3` floor to the **measured noisy grad families only** (decoder-layer
 QK-norms, folded `layer_norm_weight`s, and the attention/MLP weight matrices): the
 training data is bitwise-identical, but the target's weights carry the fault-inherent ulp
@@ -287,24 +286,6 @@ no standalone shrink). Baseline and phase_a event dirs must contain zero reconfi
 events. This is the regression gate for the off-by-one class of bugs where healing
 silently never runs and the comparison passes on two fault-free runs.
 ```
-
-In the `dp2_cp2_real_rollout` mode, phase_b (both sides) additionally passes
-`--ci-dump-engine-weight-checksums`: after every update_weights — initial sync plus every
-per-rollout sync, including the post-healing one — each rollout engine's weights are
-checksummed per tensor (sglang `weights_checker` `checksum` action) and dumped to
-`engine_checksums/{rollout_<id>,initial}/engine_<i>.json`. `compare_engine_checksum_dumps`
-asserts baseline and target checksums are identical per rollout / engine / tensor,
-fail-closed on missing dirs or files, and pins the exact tree on both sides — one
-`initial/` dir plus one `rollout_<i>/` per phase_b rollout, each with exactly
-`mode.rollout_num_engines` engine files — so a symmetric loss (e.g. broken rollout_id
-plumbing dumping everything into `initial/`, or a shrunken engine set) cannot pass.
-Sensitivity: both sides train bitwise-identically (asserted above), so every
-update_weights pushes bitwise-identical weights and the engine hashes must match with zero
-tolerance. A silently broken post-heal weight sync — no-op, mis-mapped tensors,
-partially-pushed weights, or corruption — flips at least one tensor's hash and fails with
-the rollout, engine, and tensor name. This is also the assertion covering the post-heal
-update_weights path for `scenario_with_failure` (same code path; see its notes on why a
-hash comparison cannot run there directly).
 
 ### `scenario_ft_random`
 

@@ -71,14 +71,8 @@ class RayTrainGroup:
         """Save actor model"""
         await self._broadcast("save_model", rollout_id, force_sync=force_sync)
 
-    async def update_weights(self, rollout_id: int | None = None):
+    async def update_weights(self):
         """Broadcast weights from rank 0 to all other ranks."""
-        assert self.args.ci_dump_engine_weight_checksums is None, (
-            "--ci-dump-engine-weight-checksums is only supported by the experimental FT trainer "
-            "(MILES_EXPERIMENTAL_FT_TRAINER=1, RayTrainGroup)"
-        )
-        del rollout_id
-
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return
 

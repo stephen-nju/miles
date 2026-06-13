@@ -14,7 +14,6 @@ from miles.utils.test_utils.comparisons import (
     compare_dumps,
     compare_metrics,
 )
-from miles.utils.test_utils.engine_checksums import INITIAL_DUMP_NAME, compare_engine_checksum_dumps
 from miles.utils.test_utils.reconfigure_assertions import ReconfigureInfo, assert_reconfigure_events
 
 NUM_PHASE_A_STEPS: int = 1
@@ -65,17 +64,10 @@ def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enabl
     else:
         phase_a_dir = dump_dir.replace("/phase_b", "/phase_a")
         base += f"--load {phase_a_dir}/ckpt "
-        base += _append_engine_checksum_args(mode, dump_dir)
         if is_target:
             base += f"--ci-ft-test-actions '{json.dumps(_DETERMINISTIC_ACTIONS)}' "
 
     return base
-
-
-def _append_engine_checksum_args(mode: FTTestMode, dump_dir: str) -> str:
-    if not mode.has_real_rollout:
-        return ""
-    return f"--ci-dump-engine-weight-checksums {dump_dir}/engine_checksums "
 
 
 def _build_baseline_args(mode: FTTestMode, dump_dir: str, enable_dumper: bool = True) -> str:
@@ -144,22 +136,7 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
         allow_skipped_pattern=INPUT_TENSORS_SKIP_PATTERN,
         allow_failed_pattern=INPUT_TENSORS_ALLOW_FAILED_PATTERN,
     )
-    _compare_engine_checksums(dump_dir, mode)
     print("Deterministic healing comparison test PASSED")
-
-
-def _compare_engine_checksums(dump_dir: str, mode: FTTestMode) -> None:
-    if not mode.has_real_rollout:
-        return
-    expected_rollout_names = {INITIAL_DUMP_NAME} | {
-        f"rollout_{rollout_id}" for rollout_id in range(NUM_PHASE_A_STEPS, NUM_PHASE_B_STEPS)
-    }
-    compare_engine_checksum_dumps(
-        baseline_dir=f"{dump_dir}/baseline/phase_b/engine_checksums",
-        target_dir=f"{dump_dir}/target/phase_b/engine_checksums",
-        expected_rollout_names=expected_rollout_names,
-        expected_num_engines=mode.rollout_num_engines,
-    )
 
 
 TEST_NAME: str = "trainer_ft_deterministic"

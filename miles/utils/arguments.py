@@ -1558,18 +1558,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "wrong (legitimate ulp-level drift only flips occasional sampled tokens).",
             )
             parser.add_argument(
-                "--ci-dump-engine-weight-checksums",
-                type=str,
-                default=None,
-                help="CI comparison tests only: directory to dump per-engine weight checksums. "
-                "After every update_weights() completes, each rollout engine computes a "
-                "per-tensor checksum of its current weights (sglang weights_checker "
-                "'checksum' action) and the result is written to "
-                "<dir>/rollout_<rollout_id>/engine_<i>.json (<dir>/initial/... for the "
-                "weight sync before the first rollout). Only supported by the experimental "
-                "FT trainer (MILES_EXPERIMENTAL_FT_TRAINER=1).",
-            )
-            parser.add_argument(
                 "--env-report",
                 type=str,
                 default=os.environ.get("MILES_SCRIPT_ENV_REPORT", ""),
@@ -2291,17 +2279,6 @@ def miles_validate_args(args):
         assert args.load_debug_rollout_data is None, (
             "--ci-inject-rollout-data-path replaces data of individual rollouts while engines "
             "stay alive; it cannot be combined with --load-debug-rollout-data (debug_train_only)."
-        )
-
-    if args.ci_dump_engine_weight_checksums is not None:
-        assert not args.debug_train_only and not args.debug_rollout_only, (
-            "--ci-dump-engine-weight-checksums checksums live rollout engines after each "
-            "update_weights; it cannot be combined with --debug-train-only or --debug-rollout-only."
-        )
-        assert not args.debug_skip_weight_update, (
-            "--ci-dump-engine-weight-checksums checksums live rollout engines after each "
-            "update_weights; it cannot be combined with --debug-skip-weight-update, which "
-            "skips the actual weight push and would make the dumps record stale weights."
         )
 
     args.use_critic = args.advantage_estimator == "ppo"
