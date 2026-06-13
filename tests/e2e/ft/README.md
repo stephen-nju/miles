@@ -313,16 +313,12 @@ Architecture (external fault injection, not inside training loop):
      sequence is pinned), and the last reconfigure event must restore full cell
      membership — the soak must end fully healed, not silently degraded (strict, no
      trailing-shrink tolerance).
-     Cooldown guarantee (server-side, race-free): the control server runs in the
-     training process, so an inject-fault request reads the authoritative current
-     rollout. The /inject-fault endpoint rejects (409) any injection once the current
-     rollout is in the final COOLDOWN_ROLLOUTS (=3) — the injector's POST fails, is
-     not counted, and the tail stays provably fault-free. The actor kills itself
-     almost immediately on a forwarded inject (dedicated concurrency group), so a
-     fault lands in the current rollout (at most slipping to the next). Hence shrink
-     is at most at num_rollout - COOLDOWN and its heal at most at num_rollout -
-     COOLDOWN + 1 = num_rollout - 2, leaving >=1 fault-free rollout that ends the soak
-     at full membership. This does not depend on rollout duration.
+     Cooldown guarantee: the injector polls GET /api/v1/progress and stops injecting
+     once training reaches num_steps - COOLDOWN_ROLLOUTS (=3), so the tail runs
+     fault-free. poll+inject latency (~1s) is far below a rollout (~tens of s), so a
+     fault lands in the observed rollout or at most the next one; COOLDOWN=3 absorbs
+     that <=2-rollout slippage, putting the last injection at <= num_steps - 2 and
+     its heal at <= num_steps - 1 (the final rollout). Hence no trailing shrink.
 
 CLI options: --seed (default 42), --num-steps (default 30), --crash-probability (default 0.1)
 ```

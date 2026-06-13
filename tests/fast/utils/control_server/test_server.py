@@ -3,11 +3,10 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from miles.utils.control_server.progress import TrainingProgress
 from miles.utils.control_server.registry import _CellRegistry
-from miles.utils.control_server.server import COOLDOWN_ROLLOUTS, _create_control_app
+from miles.utils.control_server.server import _create_control_app
 
-from .conftest import MockHandle
+from .conftest import MockHandle, make_mock_group
 
 
 class TestGetHealth:
@@ -18,56 +17,30 @@ class TestGetHealth:
         assert resp.json() == {"status": "ok"}
 
 
-class TestInjectFaultCooldown:
-    @staticmethod
-    def _make_client(*, registry: _CellRegistry, progress: TrainingProgress, num_rollout: int) -> httpx.AsyncClient:
-        app = _create_control_app(registry=registry, progress=progress, num_rollout=num_rollout)
+class TestGetProgress:
+    @pytest.mark.asyncio
+    async def test_progress_reflects_group_current_rollout_id(self) -> None:
+        """GET /api/v1/progress returns the group's current_rollout_id."""
+        group = make_mock_group([], current_rollout_id=7)
+        app = _create_control_app(_CellRegistry(), group)
         transport = httpx.ASGITransport(app=app)
-        return httpx.AsyncClient(transport=transport, base_url="http://test")
-
-    @pytest.mark.asyncio
-    async def test_injects_when_progress_is_none(self) -> None:
-        """inject-fault forwards to the handle before any train() set the rollout id."""
-        registry = _CellRegistry()
-        handle = MockHandle(cell_id="actor-0", cell_type="actor")
-        registry.register(handle)
-
-        async with self._make_client(registry=registry, progress=TrainingProgress(), num_rollout=10) as client:
-            resp = await client.post("/api/v1/cells/actor-0/inject-fault", json={"mode": "sigkill", "sub_index": 0})
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/api/v1/progress")
 
         assert resp.status_code == 200
-        assert len(handle.inject_fault_calls) == 1
+        assert resp.json() == {"current_rollout_id": 7}
 
     @pytest.mark.asyncio
-    async def test_injects_outside_cooldown_window(self) -> None:
-        """inject-fault forwards while the current rollout is before the cooldown tail."""
-        registry = _CellRegistry()
-        handle = MockHandle(cell_id="actor-0", cell_type="actor")
-        registry.register(handle)
-        num_rollout = 10
-        progress = TrainingProgress(current_rollout_id=num_rollout - COOLDOWN_ROLLOUTS - 1)
-
-        async with self._make_client(registry=registry, progress=progress, num_rollout=num_rollout) as client:
-            resp = await client.post("/api/v1/cells/actor-0/inject-fault", json={"mode": "sigkill", "sub_index": 0})
+    async def test_progress_is_null_before_first_train(self) -> None:
+        """GET /api/v1/progress returns null before any train() set the rollout id."""
+        group = make_mock_group([], current_rollout_id=None)
+        app = _create_control_app(_CellRegistry(), group)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/api/v1/progress")
 
         assert resp.status_code == 200
-        assert len(handle.inject_fault_calls) == 1
-
-    @pytest.mark.asyncio
-    async def test_rejects_at_cooldown_boundary(self) -> None:
-        """inject-fault is rejected once the current rollout enters the cooldown tail."""
-        registry = _CellRegistry()
-        handle = MockHandle(cell_id="actor-0", cell_type="actor")
-        registry.register(handle)
-        num_rollout = 10
-        progress = TrainingProgress(current_rollout_id=num_rollout - COOLDOWN_ROLLOUTS)
-
-        async with self._make_client(registry=registry, progress=progress, num_rollout=num_rollout) as client:
-            resp = await client.post("/api/v1/cells/actor-0/inject-fault", json={"mode": "sigkill", "sub_index": 0})
-
-        assert resp.status_code == 409
-        assert resp.json()["reason"] == "Conflict"
-        assert len(handle.inject_fault_calls) == 0
+        assert resp.json() == {"current_rollout_id": None}
 
 
 class TestGetCells:
