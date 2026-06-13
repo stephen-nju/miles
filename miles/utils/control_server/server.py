@@ -11,15 +11,7 @@ from starlette.responses import JSONResponse
 
 from miles.ray.train.group import RayTrainGroup
 from miles.utils.control_server.handles import _ActorCellHandle, _CellHandle, _RolloutCellHandle
-from miles.utils.control_server.models import (
-    Cell,
-    CellList,
-    CellPatch,
-    FaultInjection,
-    K8sStatus,
-    Progress,
-    _OkResponse,
-)
+from miles.utils.control_server.models import Cell, CellList, CellPatch, FaultInjection, K8sStatus, _OkResponse
 from miles.utils.control_server.registry import _CellRegistry
 
 logger = logging.getLogger(__name__)
@@ -52,11 +44,11 @@ def start_control_server(
                 )
             )
 
-    _start_control_server_raw(registry=registry, actor_model=actor_model, port=port)
+    _start_control_server_raw(registry=registry, port=port)
 
 
-def _start_control_server_raw(registry: _CellRegistry, actor_model: RayTrainGroup, port: int) -> None:
-    app = _create_control_app(registry, actor_model)
+def _start_control_server_raw(registry: _CellRegistry, port: int) -> None:
+    app = _create_control_app(registry)
 
     def _run() -> None:
         uvicorn.run(app, host="0.0.0.0", port=port)
@@ -69,7 +61,7 @@ def _start_control_server_raw(registry: _CellRegistry, actor_model: RayTrainGrou
 # -------------------------- main app ------------------------------
 
 
-def _create_control_app(registry: _CellRegistry, actor_model: RayTrainGroup) -> FastAPI:
+def _create_control_app(registry: _CellRegistry) -> FastAPI:
     app = FastAPI()
 
     # -------------------------- exceptions ------------------------------
@@ -86,10 +78,6 @@ def _create_control_app(registry: _CellRegistry, actor_model: RayTrainGroup) -> 
     @app.get("/api/v1/health")
     async def health() -> _OkResponse:
         return _OkResponse()
-
-    @app.get("/api/v1/progress")
-    async def get_progress() -> Progress:
-        return Progress(current_rollout_id=actor_model.current_rollout_id)
 
     @app.get("/api/v1/cells")
     async def get_cells() -> CellList:
