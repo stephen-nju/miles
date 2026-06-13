@@ -6,14 +6,11 @@ future change that makes healing silently disappear turns the e2e tests red inst
 of green-by-comparing-two-fault-free-runs.
 """
 
-import logging
 from pathlib import Path
 
 from miles.utils.event_logger.logger import read_events
 from miles.utils.event_logger.models import CellReconfigureEvent
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
-
-logger = logging.getLogger(__name__)
 
 
 class ExpectedReconfigure(FrozenStrictBaseModel):
