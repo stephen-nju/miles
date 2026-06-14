@@ -4,6 +4,7 @@ import enum
 import logging
 import random
 import threading
+import time
 from collections.abc import Callable
 
 import requests
@@ -60,7 +61,7 @@ def run_fault_injection_loop(
 ) -> None:
     rng = random.Random(seed)
     gate = RecoveryGate()
-    seconds_until_injection = rng.expovariate(1.0 / mean_interval_seconds)
+    next_injection_time = time.monotonic() + rng.expovariate(1.0 / mean_interval_seconds)
 
     while not stop_event.is_set():
         if stop_event.wait(timeout=poll_interval_seconds):
@@ -78,8 +79,7 @@ def run_fault_injection_loop(
         # sparse injections is seen, not missed (which would exclude the cell from the live set forever).
         gate.observe({c["metadata"]["name"]: c for c in cells})
 
-        seconds_until_injection -= poll_interval_seconds
-        if seconds_until_injection > 0:
+        if time.monotonic() < next_injection_time:
             continue
 
         # Keep >=1 cell genuinely alive: if a prior injection has not recovered yet, wait and retry
@@ -101,7 +101,7 @@ def run_fault_injection_loop(
             resp.raise_for_status()
             gate.note_injected(cell_name)
             on_successful_injection()
-            seconds_until_injection = rng.expovariate(1.0 / mean_interval_seconds)
+            next_injection_time = time.monotonic() + rng.expovariate(1.0 / mean_interval_seconds)
         except Exception:
             logger.info("Failed to inject fault into %s", cell_name, exc_info=True)
 
