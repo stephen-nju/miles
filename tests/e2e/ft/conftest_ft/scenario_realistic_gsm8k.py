@@ -6,6 +6,7 @@ from typing import Annotated
 
 import typer
 
+from tests.e2e.ft.conftest_ft.app import resolve_dump_dir
 from tests.e2e.ft.conftest_ft.fault_injection import CONTROL_SERVER_PORT, MEAN_INTERVAL_SECONDS, spawn_fault_injector
 
 import miles.utils.external_utils.command_utils as U
@@ -39,7 +40,9 @@ def run_ci(
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
 
+    dump_dir: str = resolve_dump_dir(TEST_NAME)
     train_args = _get_gsm8k_train_args(seed=seed, num_rollout=num_rollout, metric_threshold=metric_threshold)
+    train_args += f"--save-debug-event-data {dump_dir}/events "
 
     injector = spawn_fault_injector(seed=seed, mean_interval_seconds=mean_interval)
 
