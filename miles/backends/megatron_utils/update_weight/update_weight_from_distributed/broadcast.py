@@ -41,6 +41,10 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         self.quantization_config = quantization_config
         self.weight_version = 0
         self._model_update_groups = None
+        self.rollout_engines: Sequence[ActorHandle] | None = None
+
+    def is_rollout_engines_connected(self) -> bool:
+        return self.rollout_engines is not None
 
     def connect_rollout_engines(
         self,
