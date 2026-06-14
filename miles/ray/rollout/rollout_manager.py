@@ -93,7 +93,7 @@ class RolloutManager:
                     monitor = RolloutHealthMonitor(group, args)
                     monitor.start()
                     self._health_monitors.append(monitor)
-            self._ci_fault_injection_pending = self.args.ci_test  # Flag for CI fault injection
+            self._ci_fault_injection_pending = self.args.ci_test and "rollout" in self.args.ft_components
 
     # -------------------------- lifecycle -----------------------------
     # TODO: may have a `async def init` here later
