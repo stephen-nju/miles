@@ -116,9 +116,6 @@ def _get_gsm8k_train_args(*, seed: int, num_rollout: int, metric_threshold: floa
 
     grpo_args = (
         "--advantage-estimator grpo "
-        "--use-kl-loss "
-        "--kl-loss-coef 0.00 "
-        "--kl-loss-type low_var_kl "
         "--entropy-coef 0.00 "
         "--eps-clip 0.2 "
         "--eps-clip-high 0.28 "
