@@ -140,10 +140,6 @@ def _get_gsm8k_train_args(*, seed: int, num_rollout: int, metric_threshold: floa
         "--ft-components train "
         f"--control-server-port {CONTROL_SERVER_PORT} "
         "--mini-ft-controller-enable "
-        # Real-rollout GRPO on a tied-embedding model legitimately marks zero-advantage
-        # witnesses, which the (strict) witness rule flags as extra; opt this run out of
-        # the event analyzer while still collecting witness data.
-        "--ft-disable-event-analyzer "
     )
 
     ci_args = (

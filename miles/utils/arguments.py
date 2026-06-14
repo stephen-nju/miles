@@ -1558,12 +1558,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Enable event analyzer to run sanity checks (e.g. cross-replica checksum consistency) before each training step.",
             )
             parser.add_argument(
-                "--ft-disable-event-analyzer",
-                action="store_true",
-                help="Opt out of the FT-auto-enabled event analyzer (e.g. for real-rollout GRPO runs whose "
-                "model-dependent zero-advantage witnesses are ill-posed for the witness rule).",
-            )
-            parser.add_argument(
                 "--enable-witness",
                 action="store_true",
                 help="Enable forward/backward pass witness.",
@@ -2114,7 +2108,7 @@ def miles_validate_args(args):
         args.indep_dp = True
         args.delay_split_train_data_by_dp = True
         args.save_local_weight_checksum = True
-        args.enable_event_analyzer = not args.ft_disable_event_analyzer
+        args.enable_event_analyzer = True
         args.enable_witness = True
         args.non_persistent_ckpt_type = "local"
         if getattr(args, "non_persistent_local_ckpt_dir", None) is None:
@@ -2123,8 +2117,7 @@ def miles_validate_args(args):
         # fully_parallel needs all_gather_object which hangs after ncclCommAbort in healing.
         args.non_persistent_local_ckpt_algo = "atomic"
         logger.info(
-            "train in ft_components. Auto set indep_dp=True, delay_split_train_data_by_dp=True, save_local_weight_checksum=True, enable_event_analyzer=%r, enable_witness=True, non_persistent_ckpt_type='local', non_persistent_local_ckpt_algo=%r",
-            args.enable_event_analyzer,
+            "train in ft_components. Auto set indep_dp=True, delay_split_train_data_by_dp=True, save_local_weight_checksum=True, enable_event_analyzer=True, enable_witness=True, non_persistent_ckpt_type='local', non_persistent_local_ckpt_algo=%r",
             args.non_persistent_local_ckpt_algo,
         )
 
