@@ -1,5 +1,4 @@
 import logging
-import threading
 from collections.abc import Sequence
 from datetime import timedelta
 from typing import TYPE_CHECKING
@@ -17,40 +16,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Two abort()s can hit the same torchft ProcessGroup concurrently during FT recovery: torchft's
-# 120s _WorkAcceleratorTimeout timer thread and miles' reconfigure_indep_dp_group both call
-# pg.abort(). c10d ProcessGroupNCCL::abortComms is not concurrency-safe — one holds the PG mutex
-# inside commFree while the other blocks on it, deadlocking on a host mutex for ~600s until the
-# NCCL watchdog SIGABRTs the (healthy) process, taking the last alive cell down with it. A single
-# abort returns in well under a second, so serialising abort() across all torchft PGs is enough.
-# (Root cause nailed by gdb; see the FT abort-hang investigation.)
-_torchft_abort_lock = threading.RLock()
-_torchft_abort_patched = False
-
-
-def _ensure_torchft_abort_serialized() -> None:
-    global _torchft_abort_patched
-    if _torchft_abort_patched:
-        return
-
-    from torchft.process_group import ProcessGroupGloo, ProcessGroupNCCL
-
-    def _wrap(pg_cls: type) -> None:
-        original_abort = pg_cls.abort
-        if getattr(original_abort, "_miles_serialized", False):
-            return
-
-        def serialized_abort(self, *args, **kwargs):  # type: ignore[no-untyped-def]
-            with _torchft_abort_lock:
-                return original_abort(self, *args, **kwargs)
-
-        serialized_abort._miles_serialized = True  # type: ignore[attr-defined]
-        pg_cls.abort = serialized_abort
-
-    for pg_cls in (ProcessGroupNCCL, ProcessGroupGloo):
-        _wrap(pg_cls)
-    _torchft_abort_patched = True
-
 
 def create_indep_dp_group(
     store_addr: str | None,
@@ -65,8 +30,6 @@ def create_indep_dp_group(
         from torchft.process_group import ProcessGroupGloo, ProcessGroupNCCL
     except ImportError as e:
         raise ImportError("torchft is required for indep_dp. Install with: pip install torchft") from e
-
-    _ensure_torchft_abort_serialized()
 
     _TIMEOUT = timedelta(seconds=120)
 
@@ -99,11 +62,17 @@ def reconfigure_indep_dp_group(
     megatron_rank: int,
     megatron_world_size: int,
 ) -> None:
-    """Abort old indep_dp PGs and create new ones with a fresh quorum_id."""
+    """Shut down old indep_dp PGs and create new ones with a fresh quorum_id."""
     old = parallel_state.indep_dp
+    # Tear the old PGs down with shutdown() (drops the wrapper's _pg ref), NOT abort(). torchft's
+    # abort runs on its single TimeoutManager event-loop thread and can block in CudaEventDestroy;
+    # a second abort here would contend on the c10d mutex / wedge that thread, after which no FT
+    # timeout ever fires again and the next cell death hangs 600s until the NCCL watchdog SIGABRTs
+    # the survivor. In the failure path the in-flight comm was already aborted by the failed wait();
+    # in the heal path the last collective succeeded. See tests/e2e/external/torchft_process_group_reference.py.
     for g in [old.group, old.gloo_group]:
         if g is not None:
-            g.abort(errored=False)
+            g.shutdown()
 
     parallel_state.indep_dp = create_indep_dp_group(
         store_addr=store_addr,
