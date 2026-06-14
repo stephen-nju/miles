@@ -50,6 +50,10 @@ class RecoveryGate:
         return [c for c in cells if cell_is_alive(c) and c["metadata"]["name"] not in self._state_of_cell_name]
 
 
+def _compute_next_injection_time(rng: random.Random, mean_interval_seconds: float) -> float:
+    return time.monotonic() + rng.expovariate(1.0 / mean_interval_seconds)
+
+
 def run_fault_injection_loop(
     *,
     base_url: str,
@@ -61,7 +65,7 @@ def run_fault_injection_loop(
 ) -> None:
     rng = random.Random(seed)
     gate = RecoveryGate()
-    next_injection_time = time.monotonic() + rng.expovariate(1.0 / mean_interval_seconds)
+    next_injection_time = _compute_next_injection_time(rng, mean_interval_seconds)
 
     while not stop_event.is_set():
         if stop_event.wait(timeout=poll_interval_seconds):
@@ -101,7 +105,7 @@ def run_fault_injection_loop(
             resp.raise_for_status()
             gate.note_injected(cell_name)
             on_successful_injection()
-            next_injection_time = time.monotonic() + rng.expovariate(1.0 / mean_interval_seconds)
+            next_injection_time = _compute_next_injection_time(rng, mean_interval_seconds)
         except Exception:
             logger.info("Failed to inject fault into %s", cell_name, exc_info=True)
 
