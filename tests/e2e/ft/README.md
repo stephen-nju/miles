@@ -332,10 +332,10 @@ Architecture (external fault injection, not inside training loop):
   4. Health checker detects dead actor via heartbeat timeout
   5. Mini FT controller auto-recovers (suspend → resume)
   6. Verify: training completes, no hangs, prod assertions pass
-  7. Healing witness: the injector must report >=1 accepted injection (else the soak
-     proved nothing), and the event dir must contain >=1 healing CellReconfigureEvent.
-     Faults are random, so neither an exact sequence nor the end-state membership is
-     asserted — the witness only proves a fault was injected and healing actually ran.
+  7. Healing witness: the injector must report >=2 accepted injections (a single heal could
+     be a fluke) and the event dir must contain >=2 healing CellReconfigureEvents. Faults are
+     random, so neither an exact sequence nor the end-state membership is asserted — the
+     witness only proves repeated faults were injected and healing actually ran.
 
 CLI options: --seed (default 42), --num-steps (default 30), --crash-probability (default 0.1)
 ```

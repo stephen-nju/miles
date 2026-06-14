@@ -28,17 +28,22 @@ def assert_reconfigure_events(event_dir: Path, *, expected: list[ReconfigureInfo
     )
 
 
+MIN_SOAK_INJECTIONS: int = 2
+MIN_SOAK_HEALINGS: int = 2
+
+
 def assert_soak_reconfigure_events(event_dir: Path, *, num_successful_injections: int) -> None:
     events = load_reconfigure_events(event_dir)
     healings = [event for event in events if event.healed_cell_indices]
 
-    assert num_successful_injections > 0, (
-        f"Soak proved nothing in {event_dir}: the fault injector reported zero successful injections, "
-        f"so no fault tolerance was exercised"
+    assert num_successful_injections >= MIN_SOAK_INJECTIONS, (
+        f"Soak proved too little in {event_dir}: the fault injector reported only "
+        f"{num_successful_injections} successful injection(s), need >= {MIN_SOAK_INJECTIONS} "
+        f"to exercise fault recovery more than once"
     )
-    assert healings, (
-        f"Healing witness failed in {event_dir}: the fault injector reported "
-        f"{num_successful_injections} successful injection(s) but no healing event was emitted "
+    assert len(healings) >= MIN_SOAK_HEALINGS, (
+        f"Healing witness failed in {event_dir}: {num_successful_injections} successful injection(s) "
+        f"but only {len(healings)} healing event(s), need >= {MIN_SOAK_HEALINGS} "
         f"(reconfigure events: {[ReconfigureInfo.from_event(event) for event in events]})"
     )
 

@@ -96,20 +96,27 @@ class TestAssertReconfigureEvents:
 
 
 class TestAssertSoakReconfigureEvents:
-    def test_passes_when_injections_led_to_healing(self, tmp_path: Path) -> None:
-        """Successful injections with at least one healing event pass."""
-        _write_events(tmp_path, [_SHRINK_PARTIAL, _HEALING_PARTIAL])
+    def test_passes_when_enough_injections_and_healings(self, tmp_path: Path) -> None:
+        """>=2 successful injections with >=2 healing events pass the soak witness."""
+        _write_events(tmp_path, [_SHRINK_PARTIAL, _HEALING_PARTIAL, dict(_HEALING_PARTIAL, rollout_id=5, quorum_id=3)])
 
-        assert_soak_reconfigure_events(tmp_path, num_successful_injections=1)
+        assert_soak_reconfigure_events(tmp_path, num_successful_injections=2)
 
     def test_fails_when_no_injections(self, tmp_path: Path) -> None:
-        """Zero successful injections means the soak exercised no fault tolerance, so the witness fails."""
-        with pytest.raises(AssertionError, match="proved nothing"):
+        """Zero successful injections means no fault tolerance was exercised, so the witness fails."""
+        with pytest.raises(AssertionError, match="proved too little"):
             assert_soak_reconfigure_events(tmp_path, num_successful_injections=0)
 
-    def test_fails_when_injections_but_no_healing(self, tmp_path: Path) -> None:
-        """Successful injections without any healing event fail the witness."""
-        _write_events(tmp_path, [_SHRINK_PARTIAL])
+    def test_fails_when_too_few_injections(self, tmp_path: Path) -> None:
+        """A single injection is below the soak minimum even when healing events are present."""
+        _write_events(tmp_path, [_HEALING_PARTIAL, dict(_HEALING_PARTIAL, rollout_id=5, quorum_id=3)])
 
-        with pytest.raises(AssertionError, match="no healing event"):
-            assert_soak_reconfigure_events(tmp_path, num_successful_injections=2)
+        with pytest.raises(AssertionError, match="proved too little"):
+            assert_soak_reconfigure_events(tmp_path, num_successful_injections=1)
+
+    def test_fails_when_too_few_healings(self, tmp_path: Path) -> None:
+        """Enough injections but fewer than the required healing events fail the witness."""
+        _write_events(tmp_path, [_SHRINK_PARTIAL, _HEALING_PARTIAL])
+
+        with pytest.raises(AssertionError, match="Healing witness failed"):
+            assert_soak_reconfigure_events(tmp_path, num_successful_injections=3)
