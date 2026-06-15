@@ -207,8 +207,13 @@ class RayTrainGroup:
         non_error_results = [r for r in results if not isinstance(r, BaseException)]
         if not non_error_results:
             log_structured(
-                logger.error, op="check", errored=errored, discarded=discarded, normal=normal,
-                decision="retry", reason="all alive cells failed",
+                logger.error,
+                op="check",
+                errored=errored,
+                discarded=discarded,
+                normal=normal,
+                decision="retry",
+                reason="all alive cells failed",
             )
             raise RuntimeError("All cells failed in this training attempt")
 
@@ -216,14 +221,24 @@ class RayTrainGroup:
         #       This may happen when some cells fails *after* exchanging gradients w/ others
         if discarded:
             log_structured(
-                logger.warning, op="check", errored=errored, discarded=discarded, normal=normal,
-                decision="retry", reason="discarded_should_retry",
+                logger.warning,
+                op="check",
+                errored=errored,
+                discarded=discarded,
+                normal=normal,
+                decision="retry",
+                reason="discarded_should_retry",
             )
             raise ValueError("Exists DISCARDED_SHOULD_RETRY, thus need retry")
 
         log_structured(
-            logger.info, op="check", errored=errored, discarded=discarded, normal=normal,
-            decision="no_retry", reason="survivors normal, gradients valid",
+            logger.info,
+            op="check",
+            errored=errored,
+            discarded=discarded,
+            normal=normal,
+            decision="no_retry",
+            reason="survivors normal, gradients valid",
         )
 
     # ------------------------ API :: others ------------------------

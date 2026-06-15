@@ -164,7 +164,9 @@ class _MiniFTController:
         try:
             cells = await self._get_cells()
             log_structured(
-                logger.info, op="controller", phase="poll",
+                logger.info,
+                op="controller",
+                phase="poll",
                 cells=",".join(f"{c.name}:{c.status.value}" for c in cells),
             )
 
@@ -201,7 +203,9 @@ class _MiniFTController:
 
             backoff.consecutive_failures = 0
             backoff.next_attempt_at = self._clock() + self._resume_delay
-            log_structured(logger.info, op="heal", phase="done", cell=cell_name, cooldown_until=round(backoff.next_attempt_at))
+            log_structured(
+                logger.info, op="heal", phase="done", cell=cell_name, cooldown_until=round(backoff.next_attempt_at)
+            )
         except Exception:
             backoff.consecutive_failures += 1
             delay = min(5 * (2**backoff.consecutive_failures), 300)

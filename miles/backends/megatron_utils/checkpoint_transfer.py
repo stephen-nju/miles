@@ -52,7 +52,9 @@ def send_ckpt(
     payload = _TransportCodec.encode(state_dict=state_dict, iteration=iteration)
 
     transport = _create_transport(indep_dp, timeout)
-    log_structured(logger.info, op="xcell", phase="start", kind="ckpt_send", iteration=iteration, to_alive_rank=dst_rank)
+    log_structured(
+        logger.info, op="xcell", phase="start", kind="ckpt_send", iteration=iteration, to_alive_rank=dst_rank
+    )
     transport.send_checkpoint(
         dst_ranks=[dst_rank],
         step=0,
@@ -93,7 +95,9 @@ def recv_ckpt(
     )
 
     iteration, state_dict = _TransportCodec.decode(payload)
-    log_structured(logger.info, op="xcell", phase="end", kind="ckpt_recv", iteration=iteration, from_alive_rank=src_rank)
+    log_structured(
+        logger.info, op="xcell", phase="end", kind="ckpt_recv", iteration=iteration, from_alive_rank=src_rank
+    )
 
     manager = InMemoryCheckpointManager()
     manager.save(state_dict, iteration=iteration)

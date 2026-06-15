@@ -96,7 +96,9 @@ def reconfigure_indep_dp_group(
         megatron_rank=megatron_rank,
         megatron_world_size=megatron_world_size,
     )
-    log_structured(logger.info, op="reconfig", phase="end", cell=indep_dp_info.cell_index, quorum=indep_dp_info.quorum_id)
+    log_structured(
+        logger.info, op="reconfig", phase="end", cell=indep_dp_info.cell_index, quorum=indep_dp_info.quorum_id
+    )
 
 
 def _allreduce_grads_across_replicas(args, model: Sequence["DDP"], parallel_state: ParallelState) -> bool:

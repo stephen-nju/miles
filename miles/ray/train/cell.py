@@ -115,7 +115,9 @@ class RayTrainCell:
 
     def stop(self) -> None:
         if self.is_stopped:
-            log_structured(logger.info, op="state", name="stop", cell=self.cell_index, skipped=True, reason="already_stopped")
+            log_structured(
+                logger.info, op="state", name="stop", cell=self.cell_index, skipped=True, reason="already_stopped"
+            )
             return
 
         if self.is_allocated:
@@ -134,11 +136,24 @@ class RayTrainCell:
         log_structured(logger.info, op="confirm_dead", phase="start", cell=self.cell_index, n_actors=len(handles))
         start = time.monotonic()
         await asyncio.gather(*[_confirm_actor_dead(handle) for handle in handles])
-        log_structured(logger.info, op="confirm_dead", phase="end", cell=self.cell_index, elapsed_s=round(time.monotonic() - start, 1))
+        log_structured(
+            logger.info,
+            op="confirm_dead",
+            phase="end",
+            cell=self.cell_index,
+            elapsed_s=round(time.monotonic() - start, 1),
+        )
 
     def mark_as_pending(self) -> None:
         if self.is_pending or self.is_allocated:
-            log_structured(logger.info, op="state", name="mark_as_pending", cell=self.cell_index, skipped=True, current=type(self._state).__name__)
+            log_structured(
+                logger.info,
+                op="state",
+                name="mark_as_pending",
+                cell=self.cell_index,
+                skipped=True,
+                current=type(self._state).__name__,
+            )
             return
 
         self._change_state("mark_as_pending", StateStopped, StatePending())
@@ -185,10 +200,24 @@ class RayTrainCell:
         old_state_cls: type[CellState] | tuple[type[CellState], ...],
         new_state: CellState,
     ) -> None:
-        log_structured(logger.info, op="state", phase="start", name=debug_name, cell=self.cell_index, from_state=type(self._state).__name__)
+        log_structured(
+            logger.info,
+            op="state",
+            phase="start",
+            name=debug_name,
+            cell=self.cell_index,
+            from_state=type(self._state).__name__,
+        )
         assert isinstance(self._state, old_state_cls), f"{self.cell_index=} {self._state=}"
         self._state = new_state
-        log_structured(logger.info, op="state", phase="end", name=debug_name, cell=self.cell_index, to_state=type(self._state).__name__)
+        log_structured(
+            logger.info,
+            op="state",
+            phase="end",
+            name=debug_name,
+            cell=self.cell_index,
+            to_state=type(self._state).__name__,
+        )
 
     # ------------------------ API :: directly forward calls to actors ------------------------
 
@@ -208,7 +237,9 @@ class RayTrainCell:
         mark_errored_on_failure: bool = True,
     ) -> list:
         handles = self._get_actor_handles()
-        log_structured(logger.info, op="execute", phase="start", cell=self.cell_index, fn=fn_name, n_actors=len(handles))
+        log_structured(
+            logger.info, op="execute", phase="start", cell=self.cell_index, fn=fn_name, n_actors=len(handles)
+        )
         start = time.monotonic()
         try:
             result = await asyncio.gather(

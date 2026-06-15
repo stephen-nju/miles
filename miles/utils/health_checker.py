@@ -142,7 +142,9 @@ class SimpleHealthChecker(BaseHealthChecker):
         while True:
             if self._need_first_wait:
                 self._need_first_wait = False
-                log_structured(logger.info, op="health", phase="first_wait", name=self._name, wait_s=self._config.first_wait)
+                log_structured(
+                    logger.info, op="health", phase="first_wait", name=self._name, wait_s=self._config.first_wait
+                )
                 await self._clock.sleep(self._config.first_wait)
 
             if not self._paused:
