@@ -89,6 +89,9 @@ class GeneralPGUtil:
     def broadcast(self, tensor: torch.Tensor, group: dist.ProcessGroup) -> None:
         raise NotImplementedError
 
+    def barrier(self, group: dist.ProcessGroup) -> None:
+        raise NotImplementedError
+
     def all_gather(
         self, output_tensors: list[torch.Tensor], input_tensor: torch.Tensor, group: dist.ProcessGroup
     ) -> None:
@@ -121,6 +124,9 @@ class _NativePGUtil(GeneralPGUtil):
 
     def broadcast(self, tensor: torch.Tensor, group: dist.ProcessGroup) -> None:
         dist.broadcast(tensor, src=dist.get_global_rank(group, 0), group=group)
+
+    def barrier(self, group: dist.ProcessGroup) -> None:
+        dist.barrier(group=group)
 
     def all_gather(
         self, output_tensors: list[torch.Tensor], input_tensor: torch.Tensor, group: dist.ProcessGroup
@@ -181,6 +187,11 @@ class _RawPGUtil(GeneralPGUtil):
         opts = dist.BroadcastOptions()
         opts.rootRank = 0
         _check_wait(group.broadcast([tensor], opts), "broadcast")
+
+    def barrier(self, group: dist.ProcessGroup) -> None:
+        # Must .wait(): torchft arms its per-collective timeout only inside Work.wait();
+        # a fire-and-forget barrier hangs a dead-peer cell until the NCCL watchdog kills it.
+        _check_wait(group.barrier(), "barrier")
 
     def all_gather(
         self, output_tensors: list[torch.Tensor], input_tensor: torch.Tensor, group: dist.ProcessGroup

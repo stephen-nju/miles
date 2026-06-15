@@ -125,6 +125,9 @@ def _worker_pg_util_ops(rank: int, world_size: int, port: int) -> None:
             util.broadcast(tensor, group)
             assert tensor.item() == 99.0
 
+            # barrier (all ranks must reach it; returns nothing)
+            util.barrier(group)
+
             # all_gather
             input_t = torch.tensor([float(rank)])
             output_t = [torch.zeros(1) for _ in range(world_size)]
@@ -227,6 +230,28 @@ class TestRawPGUtilUnit:
         tensor = torch.tensor([1.0])
         _RawPGUtil().broadcast(tensor, group)
         group.broadcast.assert_called_once()
+
+    def test_barrier_waits_on_the_work(self) -> None:
+        # Regression: a fire-and-forget group.barrier() (no .wait()) escapes torchft's
+        # per-collective timeout, letting a dead peer hang until the NCCL watchdog kills
+        # the process. _RawPGUtil.barrier MUST wait on the returned work.
+        group = MagicMock()
+        work = MagicMock()
+        work.wait.return_value = True
+        group.barrier.return_value = work
+        _RawPGUtil().barrier(group)
+        group.barrier.assert_called_once()
+        work.wait.assert_called_once()
+
+    def test_barrier_raises_when_wait_returns_false(self) -> None:
+        # A failed barrier must raise so callers (e.g. the dumper) catch it and go
+        # degraded, instead of silently reporting success on a fire-and-forget call.
+        group = MagicMock()
+        work = MagicMock()
+        work.wait.return_value = False
+        group.barrier.return_value = work
+        with pytest.raises(RuntimeError, match="distributed operation barrier failed"):
+            _RawPGUtil().barrier(group)
 
 
 # -- MultiPGUtil tests --

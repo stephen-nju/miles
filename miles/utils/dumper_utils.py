@@ -15,6 +15,7 @@ import torch.distributed as dist
 from sglang.srt.debug_utils.dumper import DumperConfig, _get_rank, dumper
 
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils.process_group_utils import GeneralPGUtil
 from miles.utils.structured_log import log_structured
 
 logger = logging.getLogger(__name__)
@@ -289,7 +290,7 @@ def _barrier_after_dump_dir_cleanup() -> None:
             **indep_dp.debug_info,
         )
         try:
-            indep_dp.group.barrier()
+            GeneralPGUtil.create(indep_dp.group).barrier(indep_dp.group)
             log_structured(
                 logger.info,
                 op="cross_cell",
