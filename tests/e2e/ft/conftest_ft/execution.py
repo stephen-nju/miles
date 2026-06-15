@@ -174,14 +174,15 @@ _TRAINER_FT_ENV_VARS: dict[str, str] = {
 }
 
 # HACK ft-hang-repro: NCCL flight recorder so a wedged collective can be inspected without
-# guessing. TEMP_FILE is where TORCH_NCCL_DUMP_ON_TIMEOUT (and an on-demand pipe write to
-# PIPE_FILE) writes the per-rank collective trace; DESYNC_DEBUG makes a watchdog timeout
-# report which collective each rank is stuck on. Revert via `git grep 'HACK ft-hang-repro'`.
+# guessing. TEMP_FILE is where TORCH_NCCL_DUMP_ON_TIMEOUT writes the per-rank collective trace
+# on a watchdog timeout; DESYNC_DEBUG makes that timeout report which collective each rank is
+# stuck on. No DEBUG_INFO_PIPE_FILE: its persistent FIFO is named only by cell-local rank, so
+# the two same-node cells would collide on /tmp/nccl_pipe_rank_0; py-spy --native is the primary
+# live-stack tool instead. Revert via `git grep 'HACK ft-hang-repro'`.
 _HANG_REPRO_ENV_VARS: dict[str, str] = {
     "TORCH_NCCL_TRACE_BUFFER_SIZE": "20000",
     "TORCH_NCCL_DUMP_ON_TIMEOUT": "1",
     "TORCH_NCCL_DEBUG_INFO_TEMP_FILE": "/tmp/nccl_trace_rank_",
-    "TORCH_NCCL_DEBUG_INFO_PIPE_FILE": "/tmp/nccl_pipe_rank_",
     "TORCH_NCCL_DESYNC_DEBUG": "1",
 }
 
