@@ -777,6 +777,11 @@ _ERR = RuntimeError("boom")
 _ERR2 = ValueError("boom2")
 
 
+def _alive_cells_for(results) -> list[SimpleNamespace]:
+    """Mock alive cells aligned with a `results` list; only `.cell_index` is read."""
+    return [SimpleNamespace(cell_index=i) for i in range(len(results))]
+
+
 class TestCheckTrainOneAttempt:
     """_check_train_one_attempt raises ValueError when any non-exception cell has DISCARDED."""
 
@@ -790,7 +795,7 @@ class TestCheckTrainOneAttempt:
         ],
     )
     def test_no_retry_when_no_discarded(self, results):
-        RayTrainGroup._check_train_one_attempt(results)  # should not raise
+        RayTrainGroup._check_train_one_attempt(_alive_cells_for(results), results)  # should not raise
 
     @pytest.mark.parametrize(
         "results",
@@ -804,7 +809,7 @@ class TestCheckTrainOneAttempt:
     )
     def test_retry_when_discarded_exists(self, results):
         with pytest.raises(ValueError, match="DISCARDED_SHOULD_RETRY"):
-            RayTrainGroup._check_train_one_attempt(results)
+            RayTrainGroup._check_train_one_attempt(_alive_cells_for(results), results)
 
     @pytest.mark.parametrize(
         "results",
@@ -815,7 +820,7 @@ class TestCheckTrainOneAttempt:
     )
     def test_raises_when_all_cells_errored(self, results):
         with pytest.raises(RuntimeError, match="All cells failed"):
-            RayTrainGroup._check_train_one_attempt(results)
+            RayTrainGroup._check_train_one_attempt(_alive_cells_for(results), results)
 
 
 async def _set_all_train_return(group: RayTrainGroup, value: TrainStepOutcome) -> None:
