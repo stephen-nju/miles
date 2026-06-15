@@ -204,15 +204,28 @@ class RayTrainCell:
         mark_errored_on_failure: bool = True,
     ) -> list:
         handles = self._get_actor_handles()
+        # FT timeline: bracket every actor RPC so a hung call shows a `start` with no
+        # matching `end` (the orchestrator-side hang signature). This is the single
+        # chokepoint all cell.execute() calls pass through.
+        logger.info(f"FT/execute start cell={self.cell_index} fn={fn_name} n_actors={len(handles)}")
+        start = time.monotonic()
         try:
-            return await asyncio.gather(
+            result = await asyncio.gather(
                 *[
                     getattr(actor, fn_name).remote(*compute_args(i), **compute_kwargs(i))
                     for i, actor in enumerate(handles)
                 ]
             )
+            logger.info(
+                f"FT/execute end cell={self.cell_index} fn={fn_name} ok elapsed={time.monotonic() - start:.1f}s"
+            )
+            return result
         except Exception:
-            logger.error(f"Cell {self.cell_index} failed in {fn_name}", exc_info=True)
+            logger.error(
+                f"Cell {self.cell_index} failed in {fn_name} "
+                f"(FT/execute fail elapsed={time.monotonic() - start:.1f}s)",
+                exc_info=True,
+            )
             if mark_errored_on_failure:
                 self._mark_as_errored()
             raise
