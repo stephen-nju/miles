@@ -204,7 +204,7 @@ def run_training(
     merged_env_vars = {
         **_DETERMINISTIC_ENV_VARS,
         **_TRAINER_FT_ENV_VARS,
-        **_HANG_REPRO_ENV_VARS,
+        **(_HANG_REPRO_ENV_VARS if hang_repro_env else {}),
         **hang_repro_env,
         # Run eager (no torch.compile). A cell respawned after a crash cold-recompiles its first
         # forward; under dynamic batch sizes that is a per-shape Inductor compile that is slow
