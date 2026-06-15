@@ -43,14 +43,18 @@ def gather_log_data(
     # which would propagate up and mark THIS healthy cell as errored — same
     # cascade pattern as the rmtree-on-NFS case. Logging is convenience; do
     # not let a failed gather take down the cell.
+    logger.info("FT/xcell start kind=log_gather rank=%d", pg.rank)
     try:
         gathered_log_dict = MultiPGUtil.gather_object(
             obj=log_dict,
             groups_inner_to_outer=pg.gloo_groups_inner_to_outer,
         )
+        logger.info("FT/xcell end kind=log_gather rank=%d success=True", pg.rank)
     except RuntimeError:
         logger.warning(
+            "FT/xcell end kind=log_gather rank=%d success=False; "
             "gather_log_data failed (peer cell likely dead); skipping log this step",
+            pg.rank,
             exc_info=True,
         )
         return None

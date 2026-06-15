@@ -51,6 +51,7 @@ def send_ckpt(
     payload = _TransportCodec.encode(state_dict=state_dict, iteration=iteration)
 
     transport = _create_transport(indep_dp, timeout)
+    logger.info(f"FT/xcell start kind=ckpt_send iteration={iteration} to_alive_rank={dst_rank}")
     transport.send_checkpoint(
         dst_ranks=[dst_rank],
         step=0,
@@ -58,7 +59,7 @@ def send_ckpt(
         timeout=timeout,
     )
     transport.disallow_checkpoint()
-    logger.info(f"Sent checkpoint (iteration={iteration}) to alive_rank={dst_rank}")
+    logger.info(f"FT/xcell end kind=ckpt_send iteration={iteration} to_alive_rank={dst_rank} (Sent checkpoint)")
 
 
 def recv_ckpt(
@@ -82,6 +83,7 @@ def recv_ckpt(
         initialize_model_and_optimizer to consume.
     """
     transport = _create_transport(indep_dp, timeout)
+    logger.info(f"FT/xcell start kind=ckpt_recv from_alive_rank={src_rank}")
     payload = transport.recv_checkpoint(
         src_rank=src_rank,
         metadata=transport.metadata(),
@@ -90,7 +92,7 @@ def recv_ckpt(
     )
 
     iteration, state_dict = _TransportCodec.decode(payload)
-    logger.info(f"Received checkpoint (iteration={iteration}) from alive_rank={src_rank}")
+    logger.info(f"FT/xcell end kind=ckpt_recv iteration={iteration} from_alive_rank={src_rank} (Received checkpoint)")
 
     manager = InMemoryCheckpointManager()
     manager.save(state_dict, iteration=iteration)

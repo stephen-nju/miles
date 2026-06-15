@@ -278,13 +278,22 @@ def _barrier_after_dump_dir_cleanup() -> None:
 
     indep_dp = get_parallel_state().indep_dp
     if indep_dp.group is not None:
+        logger.info(
+            "FT/xcell start kind=dump_barrier cell_rank=%d members=%d", indep_dp.rank, indep_dp.size
+        )
         try:
             indep_dp.group.barrier()
+            logger.info(
+                "FT/xcell end kind=dump_barrier cell_rank=%d members=%d success=True",
+                indep_dp.rank,
+                indep_dp.size,
+            )
         except Exception:
             # A dead peer aborts the cross-cell PG and releases this barrier with an
             # error. Proceed: the peer cannot dump anyway, and the gradient allreduce
             # later in the step turns the abort into DISCARDED_SHOULD_RETRY.
             logger.error(
+                "FT/xcell end kind=dump_barrier success=False; "
                 "cross-cell barrier after dump dir cleanup raised; continuing degraded",
                 exc_info=True,
             )

@@ -64,6 +64,10 @@ def reconfigure_indep_dp_group(
 ) -> None:
     """Shut down old indep_dp PGs and create new ones with a fresh quorum_id."""
     old = parallel_state.indep_dp
+    logger.info(
+        f"FT/reconfig start cell={indep_dp_info.cell_index} -> quorum={indep_dp_info.quorum_id} "
+        f"alive_rank={indep_dp_info.alive_rank} members={indep_dp_info.alive_size} (shutting down old PGs)"
+    )
     for g in [old.group, old.gloo_group]:
         if g is not None:
             g.shutdown()
@@ -86,6 +90,11 @@ def _allreduce_grads_across_replicas(args, model: Sequence["DDP"], parallel_stat
 
     pg = parallel_state.indep_dp.group
     util = GeneralPGUtil.create(pg)
+    logger.info(
+        "FT/xcell start kind=grad_allreduce cell_rank=%d members=%d",
+        parallel_state.indep_dp.rank,
+        parallel_state.indep_dp.size,
+    )
 
     allreduce_success = True
     try:
@@ -116,4 +125,12 @@ def _allreduce_grads_across_replicas(args, model: Sequence["DDP"], parallel_stat
 
     # Intra-cell consensus: if ANY rank's allreduce failed, ALL ranks discard.
     # get_gloo_group() is cell-local (created from the default world PG).
-    return collective_bool_and(value=allreduce_success, group=get_gloo_group())
+    consensus = collective_bool_and(value=allreduce_success, group=get_gloo_group())
+    logger.info(
+        "FT/xcell end kind=grad_allreduce cell_rank=%d members=%d this_rank_ok=%s consensus_ok=%s",
+        parallel_state.indep_dp.rank,
+        parallel_state.indep_dp.size,
+        allreduce_success,
+        consensus,
+    )
+    return consensus
