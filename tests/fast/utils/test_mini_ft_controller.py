@@ -137,14 +137,16 @@ def _mock_response(*, status_code: int = 200, json_data: Any = None) -> httpx.Re
 # ------------------------ snapshot tests ------------------------
 
 
-def _make_cell_object(*, name: str = "actor-0", healthy: list[CellCondition] | None = None) -> Cell:
+def _make_cell_object(
+    *, name: str = "actor-0", healthy: list[CellCondition] | None = None, phase: str = "Running"
+) -> Cell:
     conditions: list[CellCondition] = [CellCondition.allocated(TriState.TRUE)]
     if healthy is not None:
         conditions.extend(healthy)
     return Cell(
         metadata=CellMetadata(name=name, labels={}),
         spec=CellSpec(),
-        status=CellStatus(phase="Running", conditions=conditions),
+        status=CellStatus(phase=phase, conditions=conditions),
     )
 
 
@@ -174,6 +176,25 @@ class TestComputeCellSnapshot:
 
     def test_missing_healthy_condition_maps_to_not_applicable(self):
         cell = _make_cell_object(healthy=None)
+
+        snapshot = _compute_cell_snapshot(cell)
+
+        assert snapshot == _CellSnapshot(name="actor-0", status=NOT_APPLICABLE)
+
+    def test_suspended_cell_maps_to_unhealthy_so_controller_resumes(self):
+        """A Suspended cell was shrunk out by the train side (cell.stop()) and must be resumed;
+        it carries no Healthy condition, so the controller must heal it by phase, not be misled
+        into NOT_APPLICABLE (which would lose the cell forever)."""
+        cell = _make_cell_object(healthy=None, phase="Suspended")
+
+        snapshot = _compute_cell_snapshot(cell)
+
+        assert snapshot == _CellSnapshot(name="actor-0", status=UNHEALTHY)
+
+    def test_pending_cell_maps_to_not_applicable_not_healed(self):
+        """A Pending cell is mid-heal (being re-allocated); it also has no Healthy condition but
+        must NOT be treated as needing heal, otherwise the controller fights the ongoing heal."""
+        cell = _make_cell_object(healthy=None, phase="Pending")
 
         snapshot = _compute_cell_snapshot(cell)
 
