@@ -205,7 +205,9 @@ class RayTrainGroup:
 
         non_error_results = [r for r in results if not isinstance(r, BaseException)]
         if not non_error_results:
-            logger.error(f"FT/check errored={errored} discarded={discarded} normal={normal} -> retry (all alive cells failed)")
+            logger.error(
+                f"FT/check errored={errored} discarded={discarded} normal={normal} -> retry (all alive cells failed)"
+            )
             raise RuntimeError("All cells failed in this training attempt")
 
         # NOTE: If some cells errors + all other cells claim normal, we do *not* retry
@@ -357,7 +359,12 @@ class RayTrainGroup:
             )
             return
         reason = "+".join(
-            r for r, on in [("pending_cell", exists_pending_cell), ("alive_config_changed", exists_alive_cell_changed_config)] if on
+            r
+            for r, on in [
+                ("pending_cell", exists_pending_cell),
+                ("alive_config_changed", exists_alive_cell_changed_config),
+            ]
+            if on
         )
         logger.info(
             f"FT/refresh decision rollout={rollout_id} needs_reconfigure=True reason={reason} "

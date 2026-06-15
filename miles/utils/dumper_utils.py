@@ -278,9 +278,7 @@ def _barrier_after_dump_dir_cleanup() -> None:
 
     indep_dp = get_parallel_state().indep_dp
     if indep_dp.group is not None:
-        logger.info(
-            "FT/xcell start kind=dump_barrier cell_rank=%d members=%d", indep_dp.rank, indep_dp.size
-        )
+        logger.info("FT/xcell start kind=dump_barrier cell_rank=%d members=%d", indep_dp.rank, indep_dp.size)
         try:
             indep_dp.group.barrier()
             logger.info(
