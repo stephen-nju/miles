@@ -281,7 +281,7 @@ def _barrier_after_dump_dir_cleanup() -> None:
     if indep_dp.group is not None:
         log_structured(
             logger.info,
-            op="xcell",
+            op="cross_cell",
             phase="start",
             kind="dump_barrier",
             cell_rank=indep_dp.rank,
@@ -292,7 +292,7 @@ def _barrier_after_dump_dir_cleanup() -> None:
             indep_dp.group.barrier()
             log_structured(
                 logger.info,
-                op="xcell",
+                op="cross_cell",
                 phase="end",
                 kind="dump_barrier",
                 cell_rank=indep_dp.rank,
@@ -306,7 +306,7 @@ def _barrier_after_dump_dir_cleanup() -> None:
             # later in the step turns the abort into DISCARDED_SHOULD_RETRY.
             log_structured(
                 logger.error,
-                op="xcell",
+                op="cross_cell",
                 phase="end",
                 kind="dump_barrier",
                 cell_rank=indep_dp.rank,

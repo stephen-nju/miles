@@ -112,7 +112,7 @@ def _allreduce_grads_across_replicas(args, model: Sequence["DDP"], parallel_stat
     util = GeneralPGUtil.create(pg)
     log_structured(
         logger.info,
-        op="xcell",
+        op="cross_cell",
         phase="start",
         kind="grad_allreduce",
         cell_rank=parallel_state.indep_dp.rank,
@@ -131,7 +131,7 @@ def _allreduce_grads_across_replicas(args, model: Sequence["DDP"], parallel_stat
         allreduce_success = False
         log_structured(
             logger.error,
-            op="xcell",
+            op="cross_cell",
             phase="fail",
             kind="grad_allreduce",
             cell_rank=parallel_state.indep_dp.rank,
@@ -146,7 +146,7 @@ def _allreduce_grads_across_replicas(args, model: Sequence["DDP"], parallel_stat
         allreduce_success = False
         log_structured(
             logger.error,
-            op="xcell",
+            op="cross_cell",
             phase="async_error",
             kind="grad_allreduce",
             cell_rank=parallel_state.indep_dp.rank,
@@ -159,7 +159,7 @@ def _allreduce_grads_across_replicas(args, model: Sequence["DDP"], parallel_stat
     consensus = collective_bool_and(value=allreduce_success, group=get_gloo_group())
     log_structured(
         logger.info,
-        op="xcell",
+        op="cross_cell",
         phase="end",
         kind="grad_allreduce",
         cell_rank=parallel_state.indep_dp.rank,

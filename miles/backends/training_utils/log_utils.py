@@ -44,17 +44,17 @@ def gather_log_data(
     # which would propagate up and mark THIS healthy cell as errored — same
     # cascade pattern as the rmtree-on-NFS case. Logging is convenience; do
     # not let a failed gather take down the cell.
-    log_structured(logger.info, op="xcell", phase="start", kind="log_gather", rank=pg.rank)
+    log_structured(logger.info, op="cross_cell", phase="start", kind="log_gather", rank=pg.rank)
     try:
         gathered_log_dict = MultiPGUtil.gather_object(
             obj=log_dict,
             groups_inner_to_outer=pg.gloo_groups_inner_to_outer,
         )
-        log_structured(logger.info, op="xcell", phase="end", kind="log_gather", rank=pg.rank, success=True)
+        log_structured(logger.info, op="cross_cell", phase="end", kind="log_gather", rank=pg.rank, success=True)
     except RuntimeError:
         log_structured(
             logger.warning,
-            op="xcell",
+            op="cross_cell",
             phase="end",
             kind="log_gather",
             rank=pg.rank,
