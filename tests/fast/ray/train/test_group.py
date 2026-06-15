@@ -822,6 +822,12 @@ class TestCheckTrainOneAttempt:
         with pytest.raises(RuntimeError, match="All cells failed"):
             RayTrainGroup._check_train_one_attempt(_alive_cells_for(results), results)
 
+    def test_compute_attempt_outcomes_buckets_cells_by_index(self):
+        """_compute_attempt_outcomes buckets each alive cell into errored / discarded / normal by index."""
+        results = [_ERR, [DISCARDED], [NORMAL, NORMAL]]
+        outcomes = RayTrainGroup._compute_attempt_outcomes(_alive_cells_for(results), results)
+        assert outcomes == {"errored": [0], "discarded": [1], "normal": [2]}
+
 
 async def _set_all_train_return(group: RayTrainGroup, value: TrainStepOutcome) -> None:
     for cell in group._cells:

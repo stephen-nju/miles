@@ -195,6 +195,23 @@ class RayTrainGroup:
 
     @staticmethod
     def _check_train_one_attempt(snapshot_alive_cells, results):
+        outcomes = RayTrainGroup._compute_attempt_outcomes(snapshot_alive_cells, results)
+        if not outcomes["normal"] and not outcomes["discarded"]:
+            log_structured(logger.error, op="check", **outcomes, decision="retry", reason="all alive cells failed")
+            raise RuntimeError("All cells failed in this training attempt")
+
+        # NOTE: If some cells errors + all other cells claim normal, we do *not* retry
+        #       This may happen when some cells fails *after* exchanging gradients w/ others
+        if outcomes["discarded"]:
+            log_structured(logger.warning, op="check", **outcomes, decision="retry", reason="discarded_should_retry")
+            raise ValueError("Exists DISCARDED_SHOULD_RETRY, thus need retry")
+
+        log_structured(
+            logger.info, op="check", **outcomes, decision="no_retry", reason="survivors normal, gradients valid"
+        )
+
+    @staticmethod
+    def _compute_attempt_outcomes(snapshot_alive_cells, results) -> dict[str, list[int]]:
         paired = list(zip(snapshot_alive_cells, results, strict=True))
         errored = [c.cell_index for c, r in paired if isinstance(r, BaseException)]
         discarded = [
@@ -203,43 +220,7 @@ class RayTrainGroup:
             if not isinstance(r, BaseException) and any(o == TrainStepOutcome.DISCARDED_SHOULD_RETRY for o in r)
         ]
         normal = [c.cell_index for c, r in paired if c.cell_index not in errored and c.cell_index not in discarded]
-
-        non_error_results = [r for r in results if not isinstance(r, BaseException)]
-        if not non_error_results:
-            log_structured(
-                logger.error,
-                op="check",
-                errored=errored,
-                discarded=discarded,
-                normal=normal,
-                decision="retry",
-                reason="all alive cells failed",
-            )
-            raise RuntimeError("All cells failed in this training attempt")
-
-        # NOTE: If some cells errors + all other cells claim normal, we do *not* retry
-        #       This may happen when some cells fails *after* exchanging gradients w/ others
-        if discarded:
-            log_structured(
-                logger.warning,
-                op="check",
-                errored=errored,
-                discarded=discarded,
-                normal=normal,
-                decision="retry",
-                reason="discarded_should_retry",
-            )
-            raise ValueError("Exists DISCARDED_SHOULD_RETRY, thus need retry")
-
-        log_structured(
-            logger.info,
-            op="check",
-            errored=errored,
-            discarded=discarded,
-            normal=normal,
-            decision="no_retry",
-            reason="survivors normal, gradients valid",
-        )
+        return {"errored": errored, "discarded": discarded, "normal": normal}
 
     # ------------------------ API :: others ------------------------
 
