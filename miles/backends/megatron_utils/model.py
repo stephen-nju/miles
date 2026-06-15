@@ -537,9 +537,6 @@ def train_one_step(
     if not disable_optimizer:
         optimizer.zero_grad()
 
-    # Only outcome and valid_step are logged here: both are already plain Python
-    # values at this point, so this stays free of a grad_norm float() GPU->CPU sync
-    # (grad_norm is logged once on the main rank by log_train_step).
     log_structured(
         logger.info,
         op="train_step",
