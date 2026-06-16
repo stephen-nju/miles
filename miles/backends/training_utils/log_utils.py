@@ -418,7 +418,8 @@ def aggregate_train_losses(
 
     assert len(keys) + 1 == values.numel(), f"Expected {len(keys) + 1} values, got {values.numel()}"
 
-    MultiPGUtil.all_reduce(values, parallel_state.effective_dp_cp.groups_inner_to_outer, op=dist.ReduceOp.SUM)
+    for group in parallel_state.effective_dp_cp.groups_inner_to_outer:
+        MultiPGUtil.all_reduce(values, [group], op=dist.ReduceOp.SUM)
 
     loss_reduced = {}
     values = values.tolist()
