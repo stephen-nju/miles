@@ -8,10 +8,10 @@ from megatron.core import mpu
 
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.indep_dp import IndepDPInfo
-from miles.utils.process_group_utils import GeneralPGUtil, GroupInfo, MultiPGUtil, collective_bool_and
+from miles.utils.process_group_utils import GeneralPGUtil, GroupInfo, collective_bool_and
 from miles.utils.structured_log import log_structured
 
-from ..training_utils.log_utils import finalize_train_losses, sum_micro_batch_losses
+from ..training_utils.log_utils import aggregate_train_losses
 from ..training_utils.parallel import ParallelState
 
 if TYPE_CHECKING:
@@ -124,15 +124,11 @@ def _allreduce_grads_and_losses_across_replicas(
         **parallel_state.indep_dp.debug_info,
     )
 
-    loss_keys: list[str] = []
-    loss_values = None
+    loss_reduced: dict[str, float] = {}
     allreduce_success = True
     try:
         if mpu.is_pipeline_last_stage(ignore_virtual=True):
-            loss_keys, loss_values = sum_micro_batch_losses(losses_reduced)
-            if loss_values is not None:
-                MultiPGUtil.all_reduce(loss_values, [parallel_state.intra_dp_cp.group], op=dist.ReduceOp.SUM)
-                MultiPGUtil.all_reduce(loss_values, [pg], op=dist.ReduceOp.SUM)
+            loss_reduced = aggregate_train_losses(losses_reduced)
         for model_chunk in model:
             # mimic: DistributedDataParallel.start_grad_sync
             for bucket_group in model_chunk.bucket_groups + model_chunk.expert_parallel_bucket_groups:
@@ -179,8 +175,4 @@ def _allreduce_grads_and_losses_across_replicas(
         this_rank_ok=allreduce_success,
         consensus_ok=consensus,
     )
-
-    loss_reduced: dict[str, float] = {}
-    if consensus and loss_values is not None:
-        loss_reduced = finalize_train_losses(loss_keys, loss_values, parallel_state.cp.size)
     return consensus, loss_reduced

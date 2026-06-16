@@ -404,20 +404,8 @@ def aggregate_train_losses(
         Dictionary mapping metric names to averaged values.
     """
     parallel_state = get_parallel_state()
-    keys, values = sum_micro_batch_losses(losses_reduced)
-    if values is None:
-        return {}
-
-    MultiPGUtil.all_reduce(values, parallel_state.effective_dp_cp.groups_inner_to_outer, op=dist.ReduceOp.SUM)
-
-    return finalize_train_losses(keys, values, parallel_state.cp.size)
-
-
-def sum_micro_batch_losses(
-    losses_reduced: list[dict[str, list[str] | torch.Tensor]],
-) -> tuple[list[str], torch.Tensor | None]:
     if not losses_reduced:
-        return [], None
+        return {}
 
     keys = losses_reduced[0]["keys"]
 
@@ -430,16 +418,14 @@ def sum_micro_batch_losses(
 
     assert len(keys) + 1 == values.numel(), f"Expected {len(keys) + 1} values, got {values.numel()}"
 
-    return keys, values
+    MultiPGUtil.all_reduce(values, parallel_state.effective_dp_cp.groups_inner_to_outer, op=dist.ReduceOp.SUM)
 
-
-def finalize_train_losses(keys: list[str], values: torch.Tensor, cp_size: int) -> dict[str, float]:
     loss_reduced = {}
     values = values.tolist()
     num_samples_or_tokens = values[0]
 
     for key, value in zip(keys, values[1:], strict=False):
-        loss_reduced[key] = value * cp_size / num_samples_or_tokens
+        loss_reduced[key] = value * parallel_state.cp.size / num_samples_or_tokens
 
     return loss_reduced
 
