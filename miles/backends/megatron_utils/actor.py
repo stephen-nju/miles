@@ -235,7 +235,6 @@ class MegatronTrainRayActor(TrainRayActor):
             quantization_config=getattr(self.hf_config, "quantization_config", None),
             is_lora=is_lora_enabled(args),
         )
-        self._engine_connection_stale = False
 
         # empty cache after initialization
         clear_memory()
@@ -565,14 +564,13 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.offload_train:
             reload_process_groups()
 
-        if has_new_engines or not self.weight_updater.is_rollout_engines_connected() or self._engine_connection_stale:
+        if has_new_engines or not self.weight_updater.is_rollout_engines_fresh():
             self.weight_updater.connect_rollout_engines(
                 rollout_engines,
                 rollout_engine_lock,
                 engine_gpu_counts=engine_gpu_counts,
                 engine_gpu_offsets=engine_gpu_offsets,
             )
-            self._engine_connection_stale = False
             dist.barrier(group=get_gloo_group())
             if dist.get_rank() == 0:
                 ray.get(self.rollout_manager.clear_updatable_has_new_engines.remote())
@@ -694,4 +692,4 @@ class MegatronTrainRayActor(TrainRayActor):
             megatron_rank=dist.get_rank(),
             megatron_world_size=dist.get_world_size(),
         )
-        self._engine_connection_stale = True
+        self.weight_updater.mark_engine_connection_stale()
