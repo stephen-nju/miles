@@ -6,6 +6,13 @@ from miles.utils.control_server.models import TriState
 from miles.utils.health_checker import NoopHealthChecker, SimpleHealthChecker
 
 
+async def _settle(clock: FakeClock) -> None:
+    for _ in range(1000):
+        if clock.pending_count >= 1:
+            return
+        await asyncio.sleep(0)
+
+
 def _make_checker(
     *,
     check_fn=None,
@@ -74,13 +81,8 @@ class TestCheckFnCalled:
         checker, clock = _make_checker(check_fn=check_fn, interval=10.0)
         await checker.start()
 
-        # Step 1: first_wait=0, so first check runs immediately, then the loop parks in
-        # clock.sleep(interval). Drain until it has parked (a waiter is registered) so the
-        # interval sleep is anchored at now=0 before we advance time.
-        for _ in range(1000):
-            if clock.pending_count >= 1:
-                break
-            await asyncio.sleep(0)
+        # Step 1: first_wait=0, so first check runs immediately after task starts
+        await _settle(clock)
         assert call_count == 1
 
         # Step 2: Elapse less than interval — no second check
@@ -124,7 +126,7 @@ class TestOnResult:
 
         checker, clock = _make_checker(on_result=lambda s: results.append(s))
         await checker.start()
-        await asyncio.sleep(0)
+        await _settle(clock)
         checker.stop()
 
         assert results == [True]
@@ -137,7 +139,7 @@ class TestOnResult:
 
         checker, clock = _make_checker(check_fn=check_fn, on_result=lambda s: results.append(s))
         await checker.start()
-        await asyncio.sleep(0)
+        await _settle(clock)
         checker.stop()
 
         assert results == [False]
@@ -151,7 +153,7 @@ class TestOnResult:
         checker, clock = _make_checker(check_fn=check_fn, on_result=lambda s: results.append(s), interval=5.0)
         await checker.start()
 
-        await asyncio.sleep(0)
+        await _settle(clock)
         await clock.elapse(5.0)
         checker.stop()
 
@@ -169,6 +171,7 @@ class TestOnResult:
 
         checker, clock = _make_checker(check_fn=check_fn, on_result=lambda s: results.append(s), interval=5.0)
         await checker.start()
+        await _settle(clock)
         # first_wait=0 so first check runs immediately on start
         assert results == [True]
 
@@ -286,7 +289,7 @@ class TestTriState:
     async def test_healthy_after_successful_check(self):
         checker, clock = _make_checker()
         await checker.start()
-        await asyncio.sleep(0)
+        await _settle(clock)
 
         assert checker.status == TriState.TRUE
         checker.stop()
@@ -297,7 +300,7 @@ class TestTriState:
 
         checker, clock = _make_checker(check_fn=check_fn)
         await checker.start()
-        await asyncio.sleep(0)
+        await _settle(clock)
 
         assert checker.status == TriState.FALSE
         checker.stop()
@@ -305,7 +308,7 @@ class TestTriState:
     async def test_stop_resets_to_unknown(self):
         checker, clock = _make_checker()
         await checker.start()
-        await asyncio.sleep(0)
+        await _settle(clock)
         assert checker.status == TriState.TRUE
 
         checker.stop()
@@ -314,7 +317,7 @@ class TestTriState:
     async def test_pause_resets_to_unknown(self):
         checker, clock = _make_checker()
         await checker.start()
-        await asyncio.sleep(0)
+        await _settle(clock)
         assert checker.status == TriState.TRUE
 
         checker.pause()
@@ -324,7 +327,7 @@ class TestTriState:
     async def test_resume_resets_to_unknown(self):
         checker, clock = _make_checker()
         await checker.start()
-        await asyncio.sleep(0)
+        await _settle(clock)
         assert checker.status == TriState.TRUE
 
         checker.pause()
@@ -344,7 +347,7 @@ class TestTriState:
         checker, clock = _make_checker(check_fn=check_fn, interval=5.0)
         await checker.start()
 
-        await asyncio.sleep(0)
+        await _settle(clock)
         assert checker.status == TriState.FALSE
 
         await clock.elapse(5.0)
@@ -374,7 +377,7 @@ class TestFailureThresholdDebounce:
         check_fn = self._flaky_check_fn([True, False, False])
         checker, clock = _make_checker(check_fn=check_fn, interval=5.0, failure_threshold=3)
         await checker.start()
-        await asyncio.sleep(0)
+        await _settle(clock)
         assert checker.status == TriState.TRUE
 
         await clock.elapse(5.0)
@@ -392,7 +395,7 @@ class TestFailureThresholdDebounce:
         checker, clock = _make_checker(check_fn=check_fn, interval=5.0, failure_threshold=3)
         await checker.start()
 
-        await asyncio.sleep(0)
+        await _settle(clock)
         assert checker.status == TriState.UNKNOWN  # 1st failure: below threshold, keep initial UNKNOWN
 
         await clock.elapse(5.0)
@@ -409,7 +412,7 @@ class TestFailureThresholdDebounce:
         checker, clock = _make_checker(check_fn=check_fn, interval=5.0, failure_threshold=3)
         await checker.start()
 
-        await asyncio.sleep(0)  # fail 1
+        await _settle(clock)  # fail 1
         await clock.elapse(5.0)  # fail 2
         assert checker._consecutive_failures == 2
 
@@ -431,7 +434,7 @@ class TestFailureThresholdDebounce:
             check_fn=check_fn, on_result=lambda s: results.append(s), interval=5.0, failure_threshold=3
         )
         await checker.start()
-        await asyncio.sleep(0)
+        await _settle(clock)
         for _ in range(3):
             await clock.elapse(5.0)
         checker.stop()
@@ -442,7 +445,7 @@ class TestFailureThresholdDebounce:
         check_fn = self._flaky_check_fn([False, False, False])
         checker, clock = _make_checker(check_fn=check_fn, interval=5.0, failure_threshold=3)
         await checker.start()
-        await asyncio.sleep(0)
+        await _settle(clock)
         await clock.elapse(5.0)
         assert checker._consecutive_failures == 2
 
