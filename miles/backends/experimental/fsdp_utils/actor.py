@@ -116,6 +116,12 @@ class FSDPTrainRayActor(TrainRayActor):
                 attn_implementation=self.args.attn_implementation,
             )
 
+        # transformers' NemotronH (Mamba2) _init_weights re-inits mixer.dt_bias + out_proj after loading;
+        # re-assert the checkpoint over any clobbered param. No-op for non-Mamba archs.
+        from .hf_compat_patches import reload_clobbered_checkpoint_params
+
+        reload_clobbered_checkpoint_params(model, self.args.hf_checkpoint, self.hf_config)
+
         model.train()
 
         full_state = model.state_dict()

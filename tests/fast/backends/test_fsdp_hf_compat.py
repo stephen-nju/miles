@@ -85,3 +85,20 @@ def test_qwen3_moe_patch_noops_on_batched_structure():
     apply_fsdp_moe_patch()  # must not raise
     if hasattr(modeling_qwen3_moe, "Qwen3MoeExperts") or hasattr(modeling_qwen3_moe, "Qwen3MoeTopKRouter"):
         assert modeling_qwen3_moe.Qwen3MoeSparseMoeBlock.forward is original_forward
+
+
+def test_is_mamba_hybrid_gating():
+    # The clobber-reload only runs for Mamba/SSM-hybrid archs (NemotronH _init_weights
+    # re-inits dt_bias + out_proj post-load); it must be a no-op gate for everything else.
+    from types import SimpleNamespace
+
+    from miles.backends.experimental.fsdp_utils.hf_compat_patches import _is_mamba_hybrid
+
+    assert _is_mamba_hybrid(SimpleNamespace(model_type="nemotron_h"))
+    assert _is_mamba_hybrid(SimpleNamespace(model_type="mamba2"))
+    # detected via layer_types even when model_type doesn't say "mamba"
+    assert _is_mamba_hybrid(SimpleNamespace(model_type="hybrid", layer_types=["mamba", "attention"]))
+    # dense / non-mamba archs must NOT trigger the reload
+    assert not _is_mamba_hybrid(SimpleNamespace(model_type="qwen3"))
+    assert not _is_mamba_hybrid(SimpleNamespace(model_type="qwen3_moe"))
+    assert not _is_mamba_hybrid(SimpleNamespace(model_type="llama", layer_types=["attention"]))
