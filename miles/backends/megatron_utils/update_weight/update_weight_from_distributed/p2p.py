@@ -272,8 +272,12 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         # after RDMA transfer via post_process_weights(post_load_weights=True).
         from sglang.srt.model_loader import loader as model_loader_module
 
-        original_post_load_weights = model_loader_module.post_load_weights
-        model_loader_module.post_load_weights = lambda *args, **kwargs: None
+        # sglang renamed the module-level post_load_weights to _post_load_weights
+        # (private) in newer builds; get_model() calls it internally via module
+        # global, so patch whichever name this build exposes.
+        post_load_attr = "post_load_weights" if hasattr(model_loader_module, "post_load_weights") else "_post_load_weights"
+        original_post_load_weights = getattr(model_loader_module, post_load_attr)
+        setattr(model_loader_module, post_load_attr, lambda *args, **kwargs: None)
         try:
             with ParallelismContext(parallelism_config):
                 model = get_model(
@@ -282,7 +286,7 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
                     device_config=DeviceConfig(device="cpu"),
                 )
         finally:
-            model_loader_module.post_load_weights = original_post_load_weights
+            setattr(model_loader_module, post_load_attr, original_post_load_weights)
 
         # Also patch the instance method for subsequent load_weights() calls
         # (deepseek_weight_loader.py:342 calls self.post_load_weights() at the end).
