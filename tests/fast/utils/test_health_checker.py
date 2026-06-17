@@ -74,8 +74,13 @@ class TestCheckFnCalled:
         checker, clock = _make_checker(check_fn=check_fn, interval=10.0)
         await checker.start()
 
-        # Step 1: first_wait=0, so first check runs immediately after task starts
-        await asyncio.sleep(0)
+        # Step 1: first_wait=0, so first check runs immediately, then the loop parks in
+        # clock.sleep(interval). Drain until it has parked (a waiter is registered) so the
+        # interval sleep is anchored at now=0 before we advance time.
+        for _ in range(1000):
+            if clock.pending_count >= 1:
+                break
+            await asyncio.sleep(0)
         assert call_count == 1
 
         # Step 2: Elapse less than interval — no second check

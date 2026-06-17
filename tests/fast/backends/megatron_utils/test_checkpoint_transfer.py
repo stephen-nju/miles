@@ -424,6 +424,7 @@ class TestTensorViewCodec:
         assert torch.equal(decoded[0], base)
         assert torch.equal(decoded[1], empty_view)
 
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
     def test_cuda_round_trip(self):
         """Production runs on CUDA — verify the codec round-trips on GPU tensors,
         including shared-storage dedup and dtype preservation."""
@@ -445,6 +446,7 @@ class TestTensorViewCodec:
         assert torch.equal(decoded[2], view_b)
         assert torch.equal(decoded[3], independent)
 
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
     def test_cuda_storage_aliasing_no_copy(self):
         """On CUDA, the encoded uint8 storage must alias the input tensor's
         device memory (no host-device or device-device copy)."""
