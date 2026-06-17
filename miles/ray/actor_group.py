@@ -8,6 +8,7 @@ import asyncio
 from ray.util.placement_group import PlacementGroup
 
 from miles.ray.train.actor_factory import allocate_gpus_for_actor
+from miles.utils.indep_dp import IndepDPInfo
 
 
 class RayTrainGroup:
@@ -63,8 +64,21 @@ class RayTrainGroup:
         """
         Allocate GPU resourced and initialize model, optimizer, local ckpt, etc.
         """
+        indep_dp_info = IndepDPInfo(
+            cell_index=0,
+            num_cells=1,
+            alive_rank=0,
+            alive_size=1,
+            quorum_id=0,
+            alive_cell_indices=[0],
+        )
         return await self._broadcast(
-            "init", self.args, self.role, with_ref=self.with_ref, with_opd_teacher=self.with_opd_teacher
+            "init",
+            self.args,
+            self.role,
+            with_ref=self.with_ref,
+            with_opd_teacher=self.with_opd_teacher,
+            indep_dp_info=indep_dp_info,
         )
 
     async def train(self, rollout_id, rollout_data_pack):
