@@ -75,13 +75,9 @@ class RolloutManager:
             self.servers = start_rollout_servers(args, pg)
             start_session_server(args)
 
-        # Initialise tracking only AFTER the router and session-server subprocesses
-        # have been forked. wandb.init() spins up service-backed objects whose
-        # weakref finalizers call into a background service thread; a forked child
-        # inherits those objects but not the thread, so finalizing one inside the
-        # child's single uvicorn event-loop thread blocks it forever and the server
-        # stops accepting connections. Forking before wandb.init() avoids inheriting
-        # that state entirely.
+        # Init tracking only after the servers are forked: a child forked after
+        # wandb.init() inherits its finalizers but not its service thread, which
+        # deadlocks the child's uvicorn event loop.
         # No router_addr when the router was not started (e.g. debug_train_only).
         router_addr = (
             f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
