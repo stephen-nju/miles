@@ -82,9 +82,7 @@ class RolloutManager:
         # child's single uvicorn event-loop thread blocks it forever and the server
         # stops accepting connections. Forking before wandb.init() avoids inheriting
         # that state entirely.
-        # router_addr stays None when the router was not started (e.g. debug_train_only),
-        # otherwise "http://None:None" would slip past the `is not None` guard in
-        # init_wandb_secondary and point metric forwarding at an invalid endpoint.
+        # No router_addr when the router was not started (e.g. debug_train_only).
         router_addr = (
             f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
             if args.sglang_router_ip and args.sglang_router_port
