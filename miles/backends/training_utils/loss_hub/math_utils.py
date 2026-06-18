@@ -14,15 +14,18 @@ from miles.backends.training_utils.parallel import get_parallel_state
 _LOG_RATIO_EXP_CLAMP = 20.0
 
 
-def _safe_exp_neg_ppo_kl(ppo_kl: torch.Tensor) -> torch.Tensor:
+def _safe_clamp_log_ratio(log_ratio: torch.Tensor) -> torch.Tensor:
     log_ratio = torch.nan_to_num(
-        -ppo_kl.float(),
+        log_ratio.float(),
         nan=0.0,
         posinf=_LOG_RATIO_EXP_CLAMP,
         neginf=-_LOG_RATIO_EXP_CLAMP,
     )
-    log_ratio = torch.clamp(log_ratio, min=-_LOG_RATIO_EXP_CLAMP, max=_LOG_RATIO_EXP_CLAMP)
-    return log_ratio.exp()
+    return torch.clamp(log_ratio, min=-_LOG_RATIO_EXP_CLAMP, max=_LOG_RATIO_EXP_CLAMP)
+
+
+def _safe_exp_neg_ppo_kl(ppo_kl: torch.Tensor) -> torch.Tensor:
+    return _safe_clamp_log_ratio(-ppo_kl).exp()
 
 
 def compute_ess_ratio_contribution(
@@ -157,13 +160,7 @@ def compute_approx_kl(
         # Besides non negative, it is also unbiased and have lower variance.
         log_ratio = -log_ratio
         if kl_loss_type == "low_var_kl":
-            log_ratio = torch.nan_to_num(
-                log_ratio.float(),
-                nan=0.0,
-                posinf=_LOG_RATIO_EXP_CLAMP,
-                neginf=-_LOG_RATIO_EXP_CLAMP,
-            )
-            log_ratio = torch.clamp(log_ratio, min=-_LOG_RATIO_EXP_CLAMP, max=_LOG_RATIO_EXP_CLAMP)
+            log_ratio = _safe_clamp_log_ratio(log_ratio)
         kl = log_ratio.exp() - 1 - log_ratio
     else:
         raise ValueError(f"Unknown kl_loss_type: {kl_loss_type}")
