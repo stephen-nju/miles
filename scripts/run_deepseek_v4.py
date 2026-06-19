@@ -103,7 +103,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # precision configs
     enable_r3: bool = True
     train_deterministic: bool = True
-    fp8_training: bool | None = None
+    # Megatron-side training precision: blockwise FP8 128x128 GEMMs when True
+    # (Hopper: fp32 scales; Blackwell: pow2 scales, MXFP8-emulated), BF16 when False.
+    # Rollout always serves the source FP8 checkpoint either way.
+    fp8_training: bool = True
     enable_mis: bool = False
 
     # pass any extra sglang/miles/megatron args through `--extra-args '--your-arg'`
@@ -151,12 +154,6 @@ def _is_blackwell(args: ScriptArgs) -> bool:
         raise RuntimeError("Cannot auto-detect hardware because CUDA is not available. Pass --hardware explicitly.")
     major, _minor = torch.cuda.get_device_capability()
     return major >= 10
-
-
-def _resolve_precision_defaults(args: ScriptArgs):
-    if args.fp8_training is None:
-        args.fp8_training = not _is_blackwell(args)
-        print(f"[precision] fp8_training auto -> {args.fp8_training}")
 
 
 def _download_dataset(args: ScriptArgs):
@@ -365,7 +362,7 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 
 
 def _train(args: ScriptArgs):
-    _resolve_precision_defaults(args)
+    print(f"[precision] fp8_training={args.fp8_training}")
     print(
         f"running on {args.num_nodes} nodes "
         f"({args.actor_num_nodes} actor nodes x {args.actor_num_gpus_per_node} GPUs/node, "
@@ -465,29 +462,28 @@ def _train(args: ScriptArgs):
         sglang_tp_size = 32
         sglang_dp_size = 32
         sglang_ep_size = 32
-        sglang_a2a_backend = "deepep"
     else:
-        sglang_world_size = args.num_gpus_per_node
-        sglang_tp_size = sglang_world_size
-        sglang_dp_size = sglang_world_size
-        sglang_ep_size = sglang_world_size
-        sglang_a2a_backend = None
+        sglang_world_size = 4
+        sglang_tp_size = 4
+        sglang_dp_size = 1
+        sglang_ep_size = 4
     sglang_args = (
         f"--rollout-num-gpus-per-engine {sglang_world_size} "
         f"--sglang-tp-size {sglang_tp_size} "
         f"--sglang-dp-size {sglang_dp_size} "
-        "--sglang-enable-dp-attention "
-        "--sglang-attention-backend compressed "
-        "--sglang-page-size 256 "
-        "--sglang-max-running-requests 64 "
-        "--sglang-chunked-prefill-size 8192 "
-        "--sglang-server-concurrency 1024 "
+        f"--sglang-ep-size {sglang_ep_size} "
         "--router-health-success-threshold 1 "
         "--router-health-check-interval-secs 15 "
         "--router-health-failure-threshold 40 "  # TODO improve
     )
-    if sglang_a2a_backend:
-        sglang_args += f"--sglang-moe-a2a-backend {sglang_a2a_backend} " "--sglang-cuda-graph-max-bs 8 "
+    if args.model_name == "DeepSeek-V4-Pro-FP8":
+        sglang_args += (
+            "--sglang-enable-dp-attention "
+            "--sglang-cuda-graph-max-bs 8 "
+            "--sglang-moe-runner-backend deep_gemm "
+            "--sglang-moe-a2a-backend deepep "
+            "--sglang-deepep-mode low_latency "
+        )
     if args.enable_mtp:
         sglang_args += (
             "--sglang-speculative-algorithm EAGLE "
@@ -495,7 +491,6 @@ def _train(args: ScriptArgs):
             "--sglang-speculative-eagle-topk 1 "
             "--sglang-speculative-num-draft-tokens 4 "
         )
-    sglang_args += f"--sglang-ep-size {sglang_ep_size} "
     extra_env_vars = {
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
         "SGLANG_DSV4_FP4_EXPERTS": "0",
@@ -565,9 +560,9 @@ def _train(args: ScriptArgs):
 
     if args.fp8_training:
         misc_args += "--transformer-impl transformer_engine " "--bf16 " "--fp8-format e4m3 " "--fp8-recipe blockwise "
-        extra_env_vars |= {
-            "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
-        }
+        # On Blackwell, TE emulates the blockwise recipe with MXFP8, which requires pow2 scales.
+        fp32_scales = "0" if _is_blackwell(args) else "1"
+        misc_args += f"""--train-env-vars '{{"NVTE_FP8_BLOCK_SCALING_FP32_SCALES":"{fp32_scales}"}}' """
 
     train_args = (
         f"{ckpt_args} "
