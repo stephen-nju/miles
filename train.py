@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 async def train(args):
     configure_logger(args, source=MainProcessIdentity())
-    maybe_start_periodic_pyspy_dump(component="driver")
+    maybe_start_periodic_pyspy_dump()
     # allocate the GPUs
     pgs = create_placement_groups(args)
     init_tracking(args)

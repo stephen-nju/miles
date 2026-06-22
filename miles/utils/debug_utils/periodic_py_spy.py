@@ -16,7 +16,7 @@ _PER_PROCESS_DUMP_TIMEOUT_SECONDS = 60
 _started = False
 
 
-def maybe_start_periodic_pyspy_dump(component: str) -> None:
+def maybe_start_periodic_pyspy_dump() -> None:
     global _started
 
     interval = float(os.environ.get(DUMP_INTERVAL_ENV, "0") or "0")
@@ -30,27 +30,27 @@ def maybe_start_periodic_pyspy_dump(component: str) -> None:
     _started = True
     thread = threading.Thread(
         target=_dump_loop,
-        args=(interval, component),
+        args=(interval,),
         daemon=True,
         name="debug-pyspy-dump",
     )
     thread.start()
-    logger.info(f"Started periodic py-spy dump (component={component}, interval={interval}s)")
+    logger.info(f"Started periodic py-spy dump (interval={interval}s)")
 
 
-def _dump_loop(interval: float, component: str) -> None:
+def _dump_loop(interval: float) -> None:
     while True:
         time.sleep(interval)
         try:
-            _dump_all_processes(component=component)
+            _dump_all_processes()
         except Exception:
             logger.exception("Periodic py-spy dump iteration failed")
 
 
-def _dump_all_processes(component: str) -> None:
+def _dump_all_processes() -> None:
     targets = _collect_target_processes()
     print(
-        f"===== [debug-pyspy] component={component} ts={int(time.time())} processes={len(targets)} =====",
+        f"===== [debug-pyspy] ts={int(time.time())} processes={len(targets)} =====",
         flush=True,
     )
     for pid, cmdline in targets:
