@@ -23,6 +23,7 @@ Contract under test (per-session in-flight gate):
 
 from __future__ import annotations
 
+import asyncio
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -30,7 +31,10 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import requests
+from starlette.responses import Response
 
+from miles.rollout.session.linear_trajectory import LinearTrajectory
+from miles.rollout.session.session_errors import MessageValidationError, TokenizationError
 from miles.rollout.session.session_server import SessionServer
 from miles.utils.http_utils import find_available_port
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
@@ -537,6 +541,269 @@ class TestSlotReleaseAfterError:
             good = _chat(env.url, session_id, {"messages": [{"role": "user", "content": "hi again"}]}, timeout=20.0)
             assert good.status_code == 200
             assert len(env.backend.request_log) == 2
+
+
+def _normal_messages(content: str) -> dict:
+    return {"messages": [{"role": "user", "content": content}]}
+
+
+class TestSlotReleaseInjectedFailures:
+    """Deterministic slot-release coverage for the remaining enumerated failure
+    paths. Each test injects a one-shot failure on the first same-session chat,
+    then proves the slot was released: the NEXT same-session chat returns 200
+    (no residual 409). Failures are injected via class-level mock patches so the
+    server thread's instance/session is affected; ordering is enforced by a
+    per-test call counter, not by sleeps.
+    """
+
+    def test_slot_released_after_prepare_validation_error(self):
+        """`prepare_pretokenized` raising MessageValidationError (400) before the
+        backend releases the slot; the next normal chat returns 200.
+        """
+
+        def process_fn(prompt: str) -> ProcessResult:
+            return ProcessResult(text="ok", finish_reason="stop")
+
+        original_prepare = LinearTrajectory.prepare_pretokenized
+        state = {"calls": 0}
+
+        def one_shot_prepare(self, *args, **kwargs):
+            state["calls"] += 1
+            if state["calls"] == 1:
+                raise MessageValidationError("injected prepare failure")
+            return original_prepare(self, *args, **kwargs)
+
+        with _router_env(process_fn) as env:
+            session_id = _create_session(env.url)
+            with patch.object(LinearTrajectory, "prepare_pretokenized", one_shot_prepare):
+                bad = _chat(env.url, session_id, _normal_messages("hi"), timeout=20.0)
+                assert bad.status_code == 400
+                # prepare failed before the backend was hit.
+                assert len(env.backend.request_log) == 0
+
+                good = _chat(env.url, session_id, _normal_messages("hi again"), timeout=20.0)
+                assert good.status_code == 200
+                assert len(env.backend.request_log) == 1
+
+    def test_slot_released_after_upstream_non_200(self):
+        """An upstream non-200 passes through (400) without recording; the slot
+        is released so the next normal chat returns 200.
+        """
+
+        def process_fn(prompt: str) -> ProcessResult:
+            return ProcessResult(text="ok", finish_reason="stop")
+
+        original_do_proxy = SessionServer.do_proxy
+        state = {"calls": 0}
+
+        async def one_shot_do_proxy(self, request, path, body=None, headers=None):
+            state["calls"] += 1
+            if state["calls"] == 1:
+                return {
+                    "request_body": body,
+                    "response_body": b'{"error":"bad"}',
+                    "status_code": 400,
+                    "headers": {"content-type": "application/json"},
+                }
+            return await original_do_proxy(self, request, path, body=body, headers=headers)
+
+        with _router_env(process_fn) as env:
+            session_id = _create_session(env.url)
+            with patch.object(SessionServer, "do_proxy", one_shot_do_proxy):
+                bad = _chat(env.url, session_id, _normal_messages("hi"), timeout=20.0)
+                assert bad.status_code == 400
+                assert bad.json()["error"] == "bad"
+
+                good = _chat(env.url, session_id, _normal_messages("hi again"), timeout=20.0)
+                assert good.status_code == 200
+
+    def test_slot_released_after_transport_502(self):
+        """A transport-error 502 (do_proxy's real error shape) passes through; the
+        slot is released so the next normal chat returns 200.
+        """
+
+        def process_fn(prompt: str) -> ProcessResult:
+            return ProcessResult(text="ok", finish_reason="stop")
+
+        original_do_proxy = SessionServer.do_proxy
+        state = {"calls": 0}
+
+        async def one_shot_do_proxy(self, request, path, body=None, headers=None):
+            state["calls"] += 1
+            if state["calls"] == 1:
+                return {
+                    "request_body": body,
+                    "response_body": b'{"error":"backend transport error"}',
+                    "status_code": 502,
+                    "headers": {"content-type": "application/json"},
+                }
+            return await original_do_proxy(self, request, path, body=body, headers=headers)
+
+        with _router_env(process_fn) as env:
+            session_id = _create_session(env.url)
+            with patch.object(SessionServer, "do_proxy", one_shot_do_proxy):
+                bad = _chat(env.url, session_id, _normal_messages("hi"), timeout=20.0)
+                assert bad.status_code == 502
+
+                good = _chat(env.url, session_id, _normal_messages("hi again"), timeout=20.0)
+                assert good.status_code == 200
+
+    def test_slot_released_after_state_update_error(self):
+        """`update_pretokenized_state` raising TokenizationError (500) after a 200
+        proxy releases the slot; the next normal chat returns 200.
+        """
+
+        def process_fn(prompt: str) -> ProcessResult:
+            return ProcessResult(text="ok", finish_reason="stop")
+
+        original_update = LinearTrajectory.update_pretokenized_state
+        state = {"calls": 0}
+
+        def one_shot_update(self, *args, **kwargs):
+            state["calls"] += 1
+            if state["calls"] == 1:
+                raise TokenizationError("injected state-update failure")
+            return original_update(self, *args, **kwargs)
+
+        with _router_env(process_fn) as env:
+            session_id = _create_session(env.url)
+            with patch.object(LinearTrajectory, "update_pretokenized_state", one_shot_update):
+                bad = _chat(env.url, session_id, _normal_messages("hi"), timeout=20.0)
+                assert bad.status_code == 500
+                # The proxy did run; the failure is in the commit step.
+                assert len(env.backend.request_log) == 1
+
+                good = _chat(env.url, session_id, _normal_messages("hi again"), timeout=20.0)
+                assert good.status_code == 200
+                assert len(env.backend.request_log) == 2
+
+    def test_slot_released_after_client_cancel_mid_proxy(self):
+        """If the handler is cancelled mid-proxy (client disconnect), the request
+        errors at the client side but the `finally` releases the slot; the next
+        normal same-session chat returns 200.
+        """
+
+        def process_fn(prompt: str) -> ProcessResult:
+            return ProcessResult(text="ok", finish_reason="stop")
+
+        original_do_proxy = SessionServer.do_proxy
+        state = {"calls": 0}
+
+        async def one_shot_do_proxy(self, request, path, body=None, headers=None):
+            state["calls"] += 1
+            if state["calls"] == 1:
+                raise asyncio.CancelledError()
+            return await original_do_proxy(self, request, path, body=body, headers=headers)
+
+        with _router_env(process_fn) as env:
+            session_id = _create_session(env.url)
+            with patch.object(SessionServer, "do_proxy", one_shot_do_proxy):
+                try:
+                    _chat(env.url, session_id, _normal_messages("hi"), timeout=20.0)
+                except requests.exceptions.RequestException:
+                    pass
+
+                good = _chat(env.url, session_id, _normal_messages("hi again"), timeout=20.0)
+                assert good.status_code == 200
+
+
+class TestBuildProxyResponse:
+    """Unit tests for SessionServer.build_proxy_response (AC-5 passthrough
+    fidelity). No running server needed: with no hf_checkpoint,
+    setup_session_routes returns early so construction is light.
+    """
+
+    def _server(self) -> SessionServer:
+        return SessionServer(SimpleNamespace(miles_router_timeout=30), backend_url="http://unused")
+
+    def test_json_200_body_and_headers_passthrough(self):
+        server = self._server()
+        body = b'{"object":"chat.completion","choices":[]}'
+        result = {
+            "response_body": body,
+            "status_code": 200,
+            "headers": {
+                "content-type": "application/json",
+                "content-length": "999",
+                "transfer-encoding": "chunked",
+                "content-encoding": "gzip",
+            },
+        }
+        resp = server.build_proxy_response(result)
+        assert isinstance(resp, Response)
+        assert resp.status_code == 200
+        assert resp.body == body
+        lowered = {k.lower() for k in resp.headers.keys()}
+        assert resp.headers["content-type"].startswith("application/json")
+        # The stale upstream content-length is dropped; transfer/content-encoding
+        # are absent. Starlette recomputes content-length from the actual body, so
+        # if present it must equal the body length (never the stale upstream "999").
+        assert "transfer-encoding" not in lowered
+        assert "content-encoding" not in lowered
+        assert resp.headers.get("content-length", str(len(body))) == str(len(body))
+
+    def test_non_json_200_body_and_media_type_preserved(self):
+        server = self._server()
+        body = b"plain text"
+        result = {
+            "response_body": body,
+            "status_code": 200,
+            "headers": {"content-type": "text/plain"},
+        }
+        resp = server.build_proxy_response(result)
+        assert isinstance(resp, Response)
+        assert resp.status_code == 200
+        assert resp.body == body
+        assert resp.media_type == "text/plain"
+        assert resp.headers["content-type"].startswith("text/plain")
+
+    def test_synthetic_502_status_and_body_passthrough(self):
+        server = self._server()
+        body = b'{"error":"backend transport error"}'
+        result = {
+            "response_body": body,
+            "status_code": 502,
+            "headers": {"content-type": "application/json"},
+        }
+        resp = server.build_proxy_response(result)
+        assert isinstance(resp, Response)
+        assert resp.status_code == 502
+        assert resp.body == body
+
+    def test_compressed_upstream_strips_stale_framing(self):
+        server = self._server()
+        body = b'{"ok":true}'
+        result = {
+            "response_body": body,
+            "status_code": 200,
+            "headers": {
+                "content-type": "application/json",
+                "content-encoding": "gzip",
+                "content-length": "5",
+            },
+        }
+        resp = server.build_proxy_response(result)
+        assert isinstance(resp, Response)
+        assert resp.body == body
+        lowered = {k.lower() for k in resp.headers.keys()}
+        # content-encoding stripped; the stale upstream content-length ("5") is
+        # dropped — Starlette recomputes from the body, never carries the stale one.
+        assert "content-encoding" not in lowered
+        assert resp.headers.get("content-length", str(len(body))) == str(len(body))
+
+    def test_generic_session_proxy_route_passes_through(self):
+        """The generic /sessions/{id}/{path} route proxies and passes the body
+        through: /abort_request on the mock backend returns {"status":"ok"} 200.
+        """
+
+        def process_fn(prompt: str) -> ProcessResult:
+            return ProcessResult(text="ok", finish_reason="stop")
+
+        with _router_env(process_fn) as env:
+            session_id = _create_session(env.url)
+            resp = requests.post(f"{env.url}/sessions/{session_id}/abort_request", timeout=10.0)
+            assert resp.status_code == 200
+            assert resp.json() == {"status": "ok"}
 
 
 class TestPassthroughFidelity:

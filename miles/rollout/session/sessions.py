@@ -38,19 +38,30 @@ def _parse_and_validate_response(response_body: bytes) -> tuple[dict, dict, list
     UpstreamResponseError on malformed meta_info / content / token-length mismatch.
     Touches no session state.
     """
-    response = json.loads(response_body)
-    choice = response.get("choices", [{}])[0]
+    try:
+        response = json.loads(response_body)
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        raise UpstreamResponseError(f"upstream response is not valid JSON: {e}") from e
+
+    choices = response.get("choices") if isinstance(response, dict) else None
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        raise UpstreamResponseError("upstream response has no valid choices[0]")
+    choice = choices[0]
     meta_info = choice.get("meta_info")
     if not isinstance(meta_info, dict) or "output_token_logprobs" not in meta_info:
         raise UpstreamResponseError("meta_info and output_token_logprobs must be in choice (requires logprobs=True)")
-    assistant_message = choice.get("message", {})
+    assistant_message = choice.get("message")
+    if not isinstance(assistant_message, dict):
+        raise UpstreamResponseError("upstream response choice has no valid message")
     if assistant_message.get("content") is None:
         raise UpstreamResponseError(
             "assistant message content is None, when tool call parser failed SGLang should still return "
             "an empty content rather than None. Please check your modified SGLang version."
         )
     output_token_logprobs = meta_info["output_token_logprobs"]
-    completion_tokens = meta_info["completion_tokens"]
+    completion_tokens = meta_info.get("completion_tokens")
+    if not isinstance(output_token_logprobs, list) or not isinstance(completion_tokens, int):
+        raise UpstreamResponseError("upstream response output_token_logprobs/completion_tokens have invalid types")
     actual_output_logprobs_len = len(output_token_logprobs)
     if actual_output_logprobs_len != completion_tokens:
         raise UpstreamResponseError(
@@ -59,7 +70,10 @@ def _parse_and_validate_response(response_body: bytes) -> tuple[dict, dict, list
             f"!= completion_tokens={completion_tokens}. "
             f"Please check whether you use the correct SGLang branch which has fix the tokenizer batch decode issue."
         )
-    completion_token_ids = [t[1] for t in output_token_logprobs]
+    try:
+        completion_token_ids = [t[1] for t in output_token_logprobs]
+    except (IndexError, TypeError, KeyError) as e:
+        raise UpstreamResponseError(f"upstream response output_token_logprobs entries are malformed: {e}") from e
     return response, assistant_message, completion_token_ids
 
 
