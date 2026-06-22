@@ -15,6 +15,7 @@ import torch.distributed as dist
 from sglang.srt.debug_utils.dumper import DumperConfig, _get_rank, dumper
 
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils.environ import enable_experimental_ft_trainer
 from miles.utils.process_group_utils import GeneralPGUtil
 from miles.utils.structured_log import log_structured
 
@@ -62,7 +63,10 @@ async def configure_sglang(args: Namespace) -> None:
     overrides = _get_phase_override_configs(args, DumperPhase.INFERENCE)
 
     engines_dir: Path = _get_dir(args) / "engines"
-    _cleanup_dump_dir(engines_dir, indep_dp_rank=0)
+    if enable_experimental_ft_trainer():
+        _cleanup_dump_dir(engines_dir, indep_dp_rank=0)
+    else:
+        _cleanup_dump_dir(engines_dir)
 
     coros = []
     for i, url in enumerate(worker_urls):
@@ -88,7 +92,7 @@ class DumperMegatronUtil:
         model: Sequence[torch.nn.Module],
         phase: DumperPhase,
         *,
-        rollout_id: int,
+        rollout_id: int = 0,
     ) -> None:
         self.phase = phase
         self.rollout_id = rollout_id
@@ -108,6 +112,15 @@ class DumperMegatronUtil:
             return
 
         extracted_model = self._extract_model(model)
+        if not enable_experimental_ft_trainer():
+            if self.phase is DumperPhase.FWD_BWD and self.overrides.get("enable_model_grad"):
+                _log_model_grad_coverage(extracted_model)
+
+            dumper.dump_model(extracted_model)
+            dumper.step()
+            dumper.configure(enable=False)
+            return
+
         get_grad: Callable[[torch.nn.Parameter], torch.Tensor | None] | None = None
         if self.phase is DumperPhase.FWD_BWD and self.overrides.get("enable_model_grad"):
             _log_model_grad_coverage(extracted_model)
@@ -138,6 +151,19 @@ class DumperMegatronUtil:
             overrides = _get_phase_override_configs(args, phase)
         if not overrides.get("enable"):
             return False
+
+        if not enable_experimental_ft_trainer():
+            merged = {
+                "dir": str(_get_dir(args)),
+                "exp_name": phase.value,
+                **overrides,
+            }
+
+            full_config = DumperConfig(**merged)
+            dumper.reset()
+            _cleanup_dump_dir(Path(merged["dir"]) / merged["exp_name"])
+            dumper.configure(**dataclasses.asdict(full_config))
+            return True
 
         exp_name = f"{phase.value}/rollout_{rollout_id}"
         merged = {
@@ -261,7 +287,14 @@ def _wrap_forward_step_with_stepping(forward_step_func: Callable) -> Callable:
 # ------------------------------- Common -------------------------------------
 
 
-def _cleanup_dump_dir(dump_dir: Path, *, indep_dp_rank: int) -> None:
+def _cleanup_dump_dir(dump_dir: Path, *, indep_dp_rank: int | None = None) -> None:
+    if not enable_experimental_ft_trainer():
+        if _get_rank() == 0 and dump_dir.is_dir():
+            shutil.rmtree(dump_dir)
+        if dist.is_initialized():
+            dist.barrier()
+        return
+
     # Only cell 0's rank 0 deletes — avoids race when multiple cells' rank 0
     # all see _get_rank()==0 and try to rmtree the same directory.
     # Best-effort: stale handles from a peer that crashed (NFS .nfsXXXX stubs)
@@ -277,6 +310,9 @@ def _cleanup_dump_dir(dump_dir: Path, *, indep_dp_rank: int) -> None:
 def _barrier_after_dump_dir_cleanup() -> None:
     if dist.is_initialized():
         dist.barrier()
+
+    if not enable_experimental_ft_trainer():
+        return
 
     indep_dp = get_parallel_state().indep_dp
     if indep_dp.group is not None:

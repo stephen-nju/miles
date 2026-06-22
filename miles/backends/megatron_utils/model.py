@@ -220,7 +220,7 @@ def forward_only(
     model: Sequence[DDP],
     data_iterator: Sequence[DataIterator],
     num_microbatches: Sequence[int],
-    rollout_id: int,
+    rollout_id: int = 0,
     store_prefix: str = "",
 ) -> dict[str, list[torch.Tensor]]:
     """Run forward passes only and collect non-loss outputs (e.g., logprobs).
