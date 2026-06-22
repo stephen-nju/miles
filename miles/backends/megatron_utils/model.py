@@ -827,16 +827,13 @@ def save_hf_model(args, rollout_id: int, model: Sequence[DDP]) -> None:
 
 
 def initialize_model_and_optimizer(
-    args: Namespace,
-    role: str = "actor",
-    checkpointing_context=None,
+    args: Namespace, role: str = "actor"
 ) -> tuple[list[DDP], MegatronOptimizer | None, OptimizerParamScheduler | None, int]:
     """Initialize model(s), optimizer, scheduler, and load from checkpoint.
 
     Args:
         args (Namespace): Runtime arguments.
         role (str): Logical role of the model (e.g., "actor", "critic").
-        checkpointing_context: pass-through checkpointing context
 
     Returns:
         tuple[list[DDP], MegatronOptimizer, OptimizerParamScheduler, int]:
@@ -857,7 +854,7 @@ def initialize_model_and_optimizer(
         model,
         optimizer,
         opt_param_scheduler,
-        checkpointing_context=checkpointing_context,
+        checkpointing_context={},
         skip_load_to_model_and_opt=False,
     )
     check_peak_gpu_memory_after_load(args)
