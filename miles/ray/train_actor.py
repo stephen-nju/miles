@@ -136,11 +136,9 @@ class TrainRayActor(RayActor):
 
         self._heartbeat.bump()
 
-    @ray.method(concurrency_group="heartbeat_status")
     def get_heartbeat_status(self) -> HeartbeatStatus:
         return self._heartbeat.status()
 
-    @ray.method(concurrency_group="fault_injector")
     def inject_fault(self, mode: str) -> None:
         _inject_fault(mode=mode)
 
