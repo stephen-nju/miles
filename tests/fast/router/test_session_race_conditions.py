@@ -24,6 +24,7 @@ Contract under test (per-session in-flight gate):
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -694,7 +695,7 @@ class TestSlotReleaseInjectedFailures:
                 assert good.status_code == 200
                 assert len(env.backend.request_log) == 2
 
-    def test_invariant_mismatch_returns_500_and_releases_slot(self):
+    def test_invariant_mismatch_returns_500_and_releases_slot(self, caplog):
         """If session.num_assistant changes between the prepare-segment capture
         and the commit-segment check, the commit raises SessionInvariantError
         (500) instead of silently skipping the state update; the slot is then
@@ -704,6 +705,12 @@ class TestSlotReleaseInjectedFailures:
         stashes the live session object, then do_proxy mutates that session's
         num_assistant on its first call — an out-of-band change the in-flight
         gate is supposed to make impossible. The commit check then trips.
+
+        The server runs in a uvicorn thread in the same process, so its `logging`
+        records propagate to the root logger and `caplog` captures them. We assert
+        the commit segment emitted an ERROR naming the invariant and the session
+        id (matching the `logger.error(...)` in `chat_completions`), and that a
+        normal fresh chat never emits that ERROR (no false trigger).
         """
 
         def process_fn(prompt: str) -> ProcessResult:
@@ -734,6 +741,7 @@ class TestSlotReleaseInjectedFailures:
             with (
                 patch.object(LinearTrajectory, "prepare_pretokenized", stashing_prepare),
                 patch.object(SessionServer, "do_proxy", mutating_do_proxy),
+                caplog.at_level(logging.ERROR),
             ):
                 bad = _chat(env.url, session_id, _normal_messages("hi"), timeout=20.0)
                 assert bad.status_code == 500, f"invariant mismatch must be 500, got {bad.status_code}"
@@ -744,6 +752,20 @@ class TestSlotReleaseInjectedFailures:
                 assert SessionInvariantError(error).status_code == 500
                 # The proxy ran (the mismatch is raised in the commit step after it).
                 assert len(env.backend.request_log) == 1
+
+                # The commit segment logged an ERROR naming the invariant and the
+                # session id (matching the `logger.error(...)` in chat_completions).
+                invariant_errors = [
+                    rec
+                    for rec in caplog.records
+                    if rec.levelno == logging.ERROR
+                    and "invariant" in rec.getMessage()
+                    and session_id in rec.getMessage()
+                ]
+                assert invariant_errors, (
+                    "expected an ERROR log naming the invariant and the session id; "
+                    f"saw records: {[(r.levelname, r.getMessage()) for r in caplog.records]}"
+                )
 
             # Patches removed. The slot must have been released on the 500 exit
             # path: a follow-up on the SAME session is NOT a stuck 409. (Its
@@ -756,10 +778,20 @@ class TestSlotReleaseInjectedFailures:
             )
 
             # A FRESH session's normal chat returns 200, confirming the event
-            # loop stayed live and the gate path recovers cleanly.
+            # loop stayed live and the gate path recovers cleanly. Capture ERROR
+            # records during this clean chat to prove no false invariant trigger.
             fresh_session_id = _create_session(env.url)
-            good = _chat(env.url, fresh_session_id, _normal_messages("hi again"), timeout=20.0)
-            assert good.status_code == 200
+            with caplog.at_level(logging.ERROR):
+                caplog.clear()
+                good = _chat(env.url, fresh_session_id, _normal_messages("hi again"), timeout=20.0)
+                assert good.status_code == 200
+                false_triggers = [
+                    rec for rec in caplog.records if rec.levelno == logging.ERROR and "invariant" in rec.getMessage()
+                ]
+                assert not false_triggers, (
+                    "a normal chat must not emit the invariant ERROR; "
+                    f"saw: {[r.getMessage() for r in false_triggers]}"
+                )
 
     def test_slot_released_after_client_cancel_mid_proxy(self):
         """If the handler is cancelled mid-proxy (client disconnect), the request
@@ -791,26 +823,26 @@ class TestSlotReleaseInjectedFailures:
                 assert good.status_code == 200
 
     def test_slot_released_after_real_client_disconnect_mid_proxy(self):
-        """A REAL client disconnect mid-proxy does not permanently wedge the
-        session: its in-flight slot is eventually released, so a later legal
-        chat reaches 200 rather than a stuck 409.
+        """A REAL client disconnect mid-proxy releases the slot and leaves the
+        session usable by its next LEGAL continuation (200), not a stuck 409.
 
-        The owner chat parks in the backend latency window; a tiny client-side
-        timeout makes `requests` abort the socket while the server handler is
-        still awaiting the backend.
+        Harness note: a real client socket abort does NOT cancel the in-flight
+        handler in this harness (uvicorn + httpx backend). The handler stays
+        parked in the proxy until the backend responds, then runs to completion
+        and commits the (abandoned) backend response; the slot is released on
+        that normal-completion `finally` (the `claimed` guard), not via an early
+        cancellation. So after a disconnect the session has advanced exactly one
+        committed turn. Recovery is therefore via a LEGAL append-only
+        continuation of that committed turn — a fresh first-turn message would
+        instead fail the append-only prefix check (400), which is expected, not
+        a slot leak.
 
-        Behavior observed in this harness (uvicorn + httpx backend): a real
-        socket abort does NOT promptly cancel the in-flight server handler. The
-        handler stays parked in the proxy until the backend responds, then runs
-        to completion and commits state; the slot is released on that normal
-        completion path (the `claimed`-guarded `finally`), not via an early
-        cancellation. So while the backend is still parked, same-session chats
-        keep getting 409; once the owner completes, the gate is free again.
-        Because the owner committed a turn, a naive fresh-message follow-up on
-        the same session would now fail the append-only prefix check (400), so
-        we (a) assert the same session stops returning 409 (slot released), then
-        (b) confirm a fresh session's normal chat returns 200 (loop is live and
-        the gate recovers cleanly).
+        We (1) fire a chat with a tiny client timeout against a high backend
+        `latency` so `requests` aborts mid-proxy; (2) bounded-poll until a probe
+        chat is no longer 409 (slot released — no fixed ordering sleep); then
+        (3) read the committed turn via GET /sessions/{id} and prove a legal
+        append-only continuation (committed user + assistant, then an allowed
+        appended `system` message) returns 200.
         """
 
         # High latency: the client times out long before the backend responds,
@@ -834,28 +866,47 @@ class TestSlotReleaseInjectedFailures:
             # genuinely parked mid-proxy when the client aborted).
             _wait_for_backend_requests(env.backend, 1)
 
-            # The same-session slot must eventually free up: poll until a chat is
-            # NOT a 409. The bounded retry waits out the owner's parked proxy
-            # (the abort did not cancel it); the core requirement is that the
-            # slot is eventually released, never a permanent 409.
+            # The same-session slot must free up. Bounded-poll a probe chat until
+            # it is NOT a 409: the abort did not cancel the parked handler, so the
+            # gate stays busy until the owner completes, then releases. We use an
+            # invalid (empty) probe payload so the probe itself never commits a
+            # turn — it only reads the gate state (409 while busy, non-409 once
+            # released) and leaves the committed trajectory untouched.
             deadline = time.time() + 10.0
             released = False
             last_status = None
             while time.time() < deadline:
-                last_status = _chat(
-                    env.url, session_id, _normal_messages("after-disconnect"), timeout=20.0
-                ).status_code
+                last_status = _chat(env.url, session_id, {"messages": []}, timeout=20.0).status_code
                 if last_status != 409:
                     released = True
                     break
                 time.sleep(0.05)
             assert released, f"slot not released after real disconnect (still {last_status} after retries)"
 
-            # The event loop stayed live and the gate path recovers cleanly: a
-            # fresh session's normal chat returns 200.
-            fresh_session_id = _create_session(env.url)
-            good = _chat(env.url, fresh_session_id, _normal_messages("after-disconnect"), timeout=20.0)
-            assert good.status_code == 200
+            # The disconnected owner's backend response committed one turn. Read
+            # it back and build a LEGAL append-only continuation: the committed
+            # user + assistant messages, then an allowed appended `system`
+            # message (mirrors the retry payload in
+            # test_same_session_second_chat_returns_409).
+            get_resp = requests.get(f"{env.url}/sessions/{session_id}", timeout=5.0)
+            assert get_resp.status_code == 200
+            records = get_resp.json()["records"]
+            assert records, "the abandoned backend response should have committed one turn"
+            committed = records[-1]
+            committed_user = committed["request"]["messages"]
+            committed_assistant = committed["response"]["choices"][0]["message"]
+            continuation = {
+                "messages": [
+                    *committed_user,
+                    committed_assistant,
+                    {"role": "system", "content": "continue-after-disconnect"},
+                ]
+            }
+            after = _chat(env.url, session_id, continuation, timeout=20.0)
+            assert after.status_code == 200, (
+                f"legal same-session continuation after a real disconnect must 200, got {after.status_code}: "
+                f"{after.text}"
+            )
 
 
 class TestBuildProxyResponse:
