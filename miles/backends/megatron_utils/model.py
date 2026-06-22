@@ -25,10 +25,8 @@ from megatron.training.global_vars import get_args
 from megatron.training.training import get_model
 
 from miles.backends.megatron_utils.indep_dp import allreduce_grads_and_losses_across_replicas
-from miles.backends.megatron_utils.types import TrainStepOutcome
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
 from miles.utils.memory_utils import clear_memory
-from miles.utils.structured_log import log_structured
 from miles.utils.witness.allocator import WitnessInfo
 
 from ..training_utils.ci_utils import check_grad_norm, check_kl
@@ -358,7 +356,7 @@ def train_one_step(
     num_microbatches: int,
     witness_info: WitnessInfo | None,
     attempt: int,
-) -> tuple[dict[str, float], float, TrainStepOutcome]:
+) -> tuple[dict[str, float], float]:
     """Execute a single pipeline-parallel training step.
 
     Runs forward/backward over ``num_microbatches``, applies optimizer step and
@@ -375,10 +373,9 @@ def train_one_step(
         num_microbatches: Number of microbatches to process.
 
     Returns:
-        Tuple of (reduced loss dict, gradient norm, step outcome).
+        Reduced loss dictionary (last stage only) and gradient norm for logging.
     """
     args = get_args()
-    parallel_state = get_parallel_state()
     dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_BWD, rollout_id=rollout_id)
     disable_optimizer = args.debug_disable_optimizer or optimizer is None
 
@@ -487,20 +484,16 @@ def train_one_step(
         forward_only=False,
     )
 
-    outcome = TrainStepOutcome.NORMAL
-    grad_norm = 0.0
     valid_step = True
+    grad_norm = 0.0
     indep_dp_loss_reduced: dict[str, float] = {}
 
+    parallel_state = get_parallel_state()
     if parallel_state.indep_dp.size > 1:
         assert step_id == 0, "indep-dp does not support multi step per train yet"
-
-        ok, indep_dp_loss_reduced = allreduce_grads_and_losses_across_replicas(
+        indep_dp_loss_reduced = allreduce_grads_and_losses_across_replicas(
             args, model, parallel_state, losses_reduced=losses_reduced
         )
-        if not ok:
-            outcome = TrainStepOutcome.DISCARDED_SHOULD_RETRY
-            valid_step = False
 
     if (not disable_optimizer) and (not getattr(args, "check_for_nan_in_loss_and_grad", True)):
         found_inf_flag = optimizer.prepare_grads()
@@ -523,8 +516,7 @@ def train_one_step(
 
     # Dump backward tensors while gradients are still attached. The optimizer
     # step and subsequent zero_grad release them.
-    if outcome == TrainStepOutcome.NORMAL:
-        dumper_phase_util.finalize(model)
+    dumper_phase_util.finalize(model)
 
     if not disable_optimizer and valid_step:
         # Update parameters.
@@ -540,24 +532,12 @@ def train_one_step(
     if not disable_optimizer:
         optimizer.zero_grad()
 
-    log_structured(
-        logger.info,
-        op="train_step",
-        rollout=rollout_id,
-        step=step_id,
-        attempt=attempt,
-        outcome=outcome.name,
-        valid_step=valid_step,
-    )
-
-    if outcome == TrainStepOutcome.NORMAL:
-        if mpu.is_pipeline_last_stage(ignore_virtual=True):
-            loss_reduced = (
-                indep_dp_loss_reduced if parallel_state.indep_dp.size > 1 else aggregate_train_losses(losses_reduced)
-            )
-            return loss_reduced, grad_norm, outcome
-
-    return {}, grad_norm, outcome
+    if mpu.is_pipeline_last_stage(ignore_virtual=True):
+        loss_reduced = (
+            indep_dp_loss_reduced if parallel_state.indep_dp.size > 1 else aggregate_train_losses(losses_reduced)
+        )
+        return loss_reduced, grad_norm
+    return {}, grad_norm
 
 
 def finalize_model_grads_with_empty_cache(*args, **kwargs):
@@ -578,7 +558,7 @@ def train(
     num_microbatches: Sequence[int],
     witness_info: WitnessInfo | None,
     attempt: int,
-) -> TrainStepOutcome:
+) -> None:
     """Run training over a rollout consisting of multiple steps.
 
     The model is switched to train mode, training hooks are configured, and
@@ -659,14 +639,12 @@ def train(
         pre_hook_enabled = False
 
     num_steps_per_rollout = len(num_microbatches)
-    if parallel_state.indep_dp.size > 1:
-        assert num_steps_per_rollout == 1, "indep_dp is incompatible with num_steps_per_rollout>1 currently"
 
     # Run training iterations till done.
     for step_id in range(num_steps_per_rollout):
 
         # Run training step.
-        loss_dict, grad_norm, train_step_outcome = train_one_step(
+        loss_dict, grad_norm = train_one_step(
             args,
             rollout_id,
             step_id,
@@ -710,7 +688,7 @@ def train(
                     check_mtp_loss(mtp_losses)
 
         # per train step log.
-        if (train_step_outcome == TrainStepOutcome.NORMAL) and is_first_replica_megatron_main_rank():
+        if is_first_replica_megatron_main_rank():
             accumulated_step_id = rollout_id * num_steps_per_rollout + step_id
             role = getattr(model[0], "role", "actor")
             role_tag = "" if role == "actor" else f"{role}-"
@@ -753,8 +731,6 @@ def train(
     # Close out pre-hooks if using distributed optimizer and overlapped param gather.
     if pre_hook_enabled:
         disable_forward_pre_hook(model)
-
-    return train_step_outcome
 
 
 def save(
