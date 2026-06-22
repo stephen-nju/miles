@@ -1,13 +1,3 @@
-"""Tests for the byte-hashing helper in the Megatron CI utilities.
-
-Focus: ``_hash_tensor_bytes`` must serialize a tensor to its raw little-endian
-parameter bytes, contiguous or not. The non-contiguous path is a regression
-guard: a transposed (non-contiguous) tensor used to raise inside ``.view``
-because ``torch.Tensor.view`` rejects a dtype reinterpret on a non-contiguous
-storage. The implementation now forces ``.contiguous()`` first, so the call
-returns the row-major bytes of the (transposed) view instead of raising.
-"""
-
 import pytest
 
 pytest.importorskip("megatron.core.distributed")

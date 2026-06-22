@@ -1,5 +1,3 @@
-"""Tests for test_utils.comparisons.metrics helpers (_keep_only_final_attempt, _check_single_metric)."""
-
 from datetime import datetime, timezone
 from typing import Any
 

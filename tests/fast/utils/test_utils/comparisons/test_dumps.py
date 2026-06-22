@@ -1,5 +1,3 @@
-"""Tests for test_utils.comparisons.dumps._find_leaf_dump_dirs."""
-
 from pathlib import Path
 
 from miles.utils.test_utils.comparisons.dumps import _find_leaf_dump_dirs
