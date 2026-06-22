@@ -1,6 +1,6 @@
 """Event-loop-responsiveness micro-benchmark for the standalone SessionServer.
 
-Why this exists (AC-6.1, directional / non-blocking):
+Why this exists (directional / non-blocking):
 The session server offloads stateless CPU work (large JSON parse/dump of the
 chat request + response, including hundreds-of-KB `routed_experts` blobs) off the
 single asyncio event loop onto a bounded `SessionServer.cpu_executor`. The claim
@@ -8,6 +8,12 @@ is that this keeps the one event loop responsive under heavy-response load so th
 liveness probe `GET /health` (handled inline on the loop) stays fast. It does NOT
 claim higher total CPU throughput: the GIL still serializes the Python JSON work,
 so this measures latency/responsiveness, not aggregate CPU.
+
+Honest reporting note: deeper per-stage server-internal timing is intentionally
+NOT instrumented into the production hot path (no probes added to chat_completions).
+The offloaded stage's cost is reported indirectly via the measured single-response
+parse cost (`json.loads` of one heavy response body), which is the per-call CPU
+component the executor offload moves off the event loop.
 
 This file is named `bench_*` so pytest does NOT auto-collect it (no flaky timing
 test in CI). Run it directly:  python tests/fast/router/bench_session_responsiveness.py
@@ -46,7 +52,7 @@ from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 
 # --- Tunable constants (kept modest so a run finishes well under a minute) ---
 HF_CHECKPOINT = "Qwen/Qwen3-0.6B"
-K_CHATS = 12  # concurrent chats, one per distinct (ungated) session
+K_CHATS = 64  # concurrent chats, one per distinct (ungated) session
 # The session server json.loads the WHOLE response body to validate it, but the
 # `routed_experts` value is opaque to it (never decoded). To isolate the CPU
 # parse cost the offload targets — without inflating the on-loop body I/O that

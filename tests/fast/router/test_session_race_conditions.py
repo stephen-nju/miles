@@ -34,7 +34,7 @@ import requests
 from starlette.responses import Response
 
 from miles.rollout.session.linear_trajectory import LinearTrajectory
-from miles.rollout.session.session_errors import MessageValidationError, TokenizationError
+from miles.rollout.session.session_errors import MessageValidationError, SessionInvariantError, TokenizationError
 from miles.rollout.session.session_server import SessionServer
 from miles.utils.http_utils import find_available_port
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
@@ -151,8 +151,11 @@ class TestSessionConcurrencyContracts:
         Park chat A in proxy (held by backend latency) and confirm via the
         arrival barrier that A holds the slot. Contenders B/C/D on the same
         session must each get 409 without ever reaching the backend, and they
-        must not release A's slot. After A finishes 200, the slot is free and a
-        fresh same-session chat succeeds.
+        must not release A's slot. The 409 is returned at slot-claim time,
+        before the contender's body is read and before the backend is hit, so
+        each contender returns near-instantly rather than waiting out A's
+        backend latency. After A finishes 200, the slot is free and a fresh
+        same-session chat succeeds.
         """
 
         # Latency comfortably larger than the time to fire three contenders.
@@ -172,12 +175,26 @@ class TestSessionConcurrencyContracts:
                 _wait_for_backend_requests(env.backend, 1)
 
                 # Contenders on the SAME session while A is parked -> 409 each.
+                # Each contender's wall-clock is measured: the gate rejects at
+                # slot-claim time (before body read, before backend), so a
+                # contender must NOT block for the owner's backend latency.
                 contender_codes = []
+                contender_elapsed_s = []
                 for _ in range(3):
+                    t0 = time.perf_counter()
                     resp = _chat(env.url, session_id, payload, timeout=10.0)
+                    contender_elapsed_s.append(time.perf_counter() - t0)
                     contender_codes.append(resp.status_code)
                     assert resp.status_code == 409, f"contender should be 409, got {resp.status_code}"
                     assert resp.json()["error"] == "session already has an in-flight chat completion"
+
+                # Each 409 returned well under the owner's backend latency,
+                # proving the contender did not block on A's parked proxy. Half
+                # the latency is a generous ceiling vs. the near-instant gate.
+                assert all(dt < latency / 2 for dt in contender_elapsed_s), (
+                    f"a contender blocked on the owner's backend latency "
+                    f"(latency={latency}s, contender elapsed={contender_elapsed_s})"
+                )
 
                 # Contenders never reached the backend: still exactly A's request.
                 assert len(env.backend.request_log) == 1
@@ -677,6 +694,73 @@ class TestSlotReleaseInjectedFailures:
                 assert good.status_code == 200
                 assert len(env.backend.request_log) == 2
 
+    def test_invariant_mismatch_returns_500_and_releases_slot(self):
+        """If session.num_assistant changes between the prepare-segment capture
+        and the commit-segment check, the commit raises SessionInvariantError
+        (500) instead of silently skipping the state update; the slot is then
+        released so a fresh session's normal chat returns 200.
+
+        The mismatch is forced deterministically (no sleeps): prepare_pretokenized
+        stashes the live session object, then do_proxy mutates that session's
+        num_assistant on its first call — an out-of-band change the in-flight
+        gate is supposed to make impossible. The commit check then trips.
+        """
+
+        def process_fn(prompt: str) -> ProcessResult:
+            return ProcessResult(text="ok", finish_reason="stop")
+
+        holder: dict = {}
+        original_prepare = LinearTrajectory.prepare_pretokenized
+        original_do_proxy = SessionServer.do_proxy
+        proxy_state = {"calls": 0}
+
+        def stashing_prepare(self, *args, **kwargs):
+            result = original_prepare(self, *args, **kwargs)
+            # Stash the live session so the do_proxy wrapper can mutate it after
+            # expected_num_assistant has already been captured.
+            holder["session"] = self
+            return result
+
+        async def mutating_do_proxy(self, request, path, body=None, headers=None):
+            proxy_state["calls"] += 1
+            if proxy_state["calls"] == 1:
+                # Out-of-band state change mid-proxy, after the prepare segment
+                # captured expected_num_assistant -> commit-time check must trip.
+                holder["session"].num_assistant += 1
+            return await original_do_proxy(self, request, path, body=body, headers=headers)
+
+        with _router_env(process_fn) as env:
+            session_id = _create_session(env.url)
+            with (
+                patch.object(LinearTrajectory, "prepare_pretokenized", stashing_prepare),
+                patch.object(SessionServer, "do_proxy", mutating_do_proxy),
+            ):
+                bad = _chat(env.url, session_id, _normal_messages("hi"), timeout=20.0)
+                assert bad.status_code == 500, f"invariant mismatch must be 500, got {bad.status_code}"
+                # Body carries SessionInvariantError's message (the gate did not
+                # silently 200-skip the commit).
+                error = bad.json()["error"]
+                assert "session state changed under the in-flight gate" in error
+                assert SessionInvariantError(error).status_code == 500
+                # The proxy ran (the mismatch is raised in the commit step after it).
+                assert len(env.backend.request_log) == 1
+
+            # Patches removed. The slot must have been released on the 500 exit
+            # path: a follow-up on the SAME session is NOT a stuck 409. (Its
+            # bumped num_assistant left the prefix state inconsistent, so the
+            # legal-continuation code may be a non-200 error, but never 409.)
+            same_session_followup = _chat(env.url, session_id, _normal_messages("hi same"), timeout=20.0)
+            assert same_session_followup.status_code != 409, (
+                f"slot was not released after the 500: same-session follow-up got "
+                f"{same_session_followup.status_code} (a stuck 409)"
+            )
+
+            # A FRESH session's normal chat returns 200, confirming the event
+            # loop stayed live and the gate path recovers cleanly.
+            fresh_session_id = _create_session(env.url)
+            good = _chat(env.url, fresh_session_id, _normal_messages("hi again"), timeout=20.0)
+            assert good.status_code == 200
+
     def test_slot_released_after_client_cancel_mid_proxy(self):
         """If the handler is cancelled mid-proxy (client disconnect), the request
         errors at the client side but the `finally` releases the slot; the next
@@ -706,11 +790,78 @@ class TestSlotReleaseInjectedFailures:
                 good = _chat(env.url, session_id, _normal_messages("hi again"), timeout=20.0)
                 assert good.status_code == 200
 
+    def test_slot_released_after_real_client_disconnect_mid_proxy(self):
+        """A REAL client disconnect mid-proxy does not permanently wedge the
+        session: its in-flight slot is eventually released, so a later legal
+        chat reaches 200 rather than a stuck 409.
+
+        The owner chat parks in the backend latency window; a tiny client-side
+        timeout makes `requests` abort the socket while the server handler is
+        still awaiting the backend.
+
+        Behavior observed in this harness (uvicorn + httpx backend): a real
+        socket abort does NOT promptly cancel the in-flight server handler. The
+        handler stays parked in the proxy until the backend responds, then runs
+        to completion and commits state; the slot is released on that normal
+        completion path (the `claimed`-guarded `finally`), not via an early
+        cancellation. So while the backend is still parked, same-session chats
+        keep getting 409; once the owner completes, the gate is free again.
+        Because the owner committed a turn, a naive fresh-message follow-up on
+        the same session would now fail the append-only prefix check (400), so
+        we (a) assert the same session stops returning 409 (slot released), then
+        (b) confirm a fresh session's normal chat returns 200 (loop is live and
+        the gate recovers cleanly).
+        """
+
+        # High latency: the client times out long before the backend responds,
+        # so the abort lands while the handler is parked mid-proxy.
+        latency = 1.0
+
+        def process_fn(prompt: str) -> ProcessResult:
+            return ProcessResult(text="ok", finish_reason="stop")
+
+        with _router_env(process_fn, latency=latency) as env:
+            session_id = _create_session(env.url)
+
+            env.backend.reset_stats()
+            # Fire the owner with a tiny timeout so `requests` aborts the
+            # connection while the handler is parked in the latency window.
+            try:
+                _chat(env.url, session_id, _normal_messages("disconnect-me"), timeout=0.1)
+            except requests.exceptions.RequestException:
+                pass
+            # Confirm the request actually reached the backend (handler was
+            # genuinely parked mid-proxy when the client aborted).
+            _wait_for_backend_requests(env.backend, 1)
+
+            # The same-session slot must eventually free up: poll until a chat is
+            # NOT a 409. The bounded retry waits out the owner's parked proxy
+            # (the abort did not cancel it); the core requirement is that the
+            # slot is eventually released, never a permanent 409.
+            deadline = time.time() + 10.0
+            released = False
+            last_status = None
+            while time.time() < deadline:
+                last_status = _chat(
+                    env.url, session_id, _normal_messages("after-disconnect"), timeout=20.0
+                ).status_code
+                if last_status != 409:
+                    released = True
+                    break
+                time.sleep(0.05)
+            assert released, f"slot not released after real disconnect (still {last_status} after retries)"
+
+            # The event loop stayed live and the gate path recovers cleanly: a
+            # fresh session's normal chat returns 200.
+            fresh_session_id = _create_session(env.url)
+            good = _chat(env.url, fresh_session_id, _normal_messages("after-disconnect"), timeout=20.0)
+            assert good.status_code == 200
+
 
 class TestBuildProxyResponse:
-    """Unit tests for SessionServer.build_proxy_response (AC-5 passthrough
-    fidelity). No running server needed: with no hf_checkpoint,
-    setup_session_routes returns early so construction is light.
+    """Unit tests for SessionServer.build_proxy_response passthrough fidelity.
+    No running server needed: with no hf_checkpoint, setup_session_routes
+    returns early so construction is light.
     """
 
     def _server(self) -> SessionServer:
