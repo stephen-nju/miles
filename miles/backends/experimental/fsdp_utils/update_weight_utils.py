@@ -265,7 +265,7 @@ class UpdateWeightFromDistributed(UpdateWeight):
             with socket.socket() as sock:
                 sock.bind(("", 0))
                 master_port = sock.getsockname()[1]
-            ## TODO: why +1?
+            # +1 for the trainer's source rank (rank 0); rollout engine ranks start at 1
             world_size = self.args.rollout_num_gpus + 1
 
             refs = [

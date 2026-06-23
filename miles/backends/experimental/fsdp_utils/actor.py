@@ -198,7 +198,7 @@ class FSDPTrainRayActor(TrainRayActor):
         checkpoint.finalize_load(self, checkpoint_payload)
 
         # Initialize data packing parameters
-        self.max_tokens_per_gpu = args.max_tokens_per_gpu  # From main arguments
+        self.max_tokens_per_gpu = args.max_tokens_per_gpu
 
         if self.args.offload_train:
             self.sleep()
