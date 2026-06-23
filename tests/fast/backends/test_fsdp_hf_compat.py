@@ -10,18 +10,15 @@ Covers:
 
 import torch
 
-from miles.backends.experimental.fsdp_utils.update_weight_utils import (
-    _is_batched_expert_param,
-    _iter_sync_named_params,
-    _split_batched_moe_expert,
-)
+from miles.backends.experimental.fsdp_utils.update_weight_utils import _iter_sync_named_params
+from miles.backends.experimental.fsdp_utils.weight_bridge import _qwen3_moe_expand, get_param_transform
 
 
 def test_split_gate_up_proj_rows_and_names():
     # [E=2, 2I=6, H=4]: fused rows are [gate(:3) | up(3:)]
     E, I, H = 2, 3, 4
     full = torch.arange(E * 2 * I * H, dtype=torch.float32).reshape(E, 2 * I, H)
-    out = dict(_split_batched_moe_expert("model.layers.0.mlp.experts.gate_up_proj", full))
+    out = dict(_qwen3_moe_expand("model.layers.0.mlp.experts.gate_up_proj", full))
 
     assert set(out) == {
         "model.layers.0.mlp.experts.0.gate_proj.weight",
@@ -41,7 +38,7 @@ def test_split_gate_up_proj_rows_and_names():
 def test_split_down_proj():
     E, H, I = 2, 4, 3
     full = torch.arange(E * H * I, dtype=torch.float32).reshape(E, H, I)
-    out = dict(_split_batched_moe_expert("model.layers.5.mlp.experts.down_proj", full))
+    out = dict(_qwen3_moe_expand("model.layers.5.mlp.experts.down_proj", full))
     assert set(out) == {
         "model.layers.5.mlp.experts.0.down_proj.weight",
         "model.layers.5.mlp.experts.1.down_proj.weight",
@@ -52,17 +49,20 @@ def test_split_down_proj():
         torch.testing.assert_close(d, full[e])
 
 
-def test_is_batched_expert_param_gating():
+def test_param_transform_gating():
+    def applies(name, param, model_type):
+        return get_param_transform(name, param, model_type) is not None
+
     gate_up = torch.zeros(2, 6, 4)
     name = "model.layers.0.mlp.experts.gate_up_proj"
     # only for model types whose SGLang loader expects per-expert weights
-    assert _is_batched_expert_param(name, gate_up, "qwen3_moe")
-    assert not _is_batched_expert_param(name, gate_up, "qwen3_5_moe")  # consumes batched directly
-    assert not _is_batched_expert_param(name, gate_up, "qwen3")  # dense
+    assert applies(name, gate_up, "qwen3_moe")
+    assert not applies(name, gate_up, "qwen3_5_moe")  # consumes batched directly
+    assert not applies(name, gate_up, "qwen3")  # dense
     # non-expert params are never split
-    assert not _is_batched_expert_param("model.layers.0.self_attn.q_proj.weight", torch.zeros(4, 4), "qwen3_moe")
+    assert not applies("model.layers.0.self_attn.q_proj.weight", torch.zeros(4, 4), "qwen3_moe")
     # 2D tensor named like an expert param is not the batched layout
-    assert not _is_batched_expert_param(name, torch.zeros(6, 4), "qwen3_moe")
+    assert not applies(name, torch.zeros(6, 4), "qwen3_moe")
 
 
 def test_iter_passthrough_for_non_expert():

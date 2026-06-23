@@ -33,20 +33,7 @@ from .dtensor import gather_full_param
 
 # Per-model-type train->rollout name/shape transforms (see weight_bridge.py): e.g. split
 # transformers>=5.6 batched qwen3_moe experts into the per-expert names SGLang wants.
-from .weight_bridge import _qwen3_moe_expand, get_param_transform
-
-
-def _is_batched_expert_param(name, param, model_type):
-    """True when a registered WeightBridge transform applies to this (name, param, model_type)."""
-    return get_param_transform(name, param, model_type) is not None
-
-
-def _split_batched_moe_expert(name, full):
-    """Split a materialized batched qwen3_moe expert tensor into per-expert named weights.
-
-    Thin wrapper over the WeightBridge transform; pure tensor logic, unit-testable on CPU.
-    """
-    yield from _qwen3_moe_expand(name, full)
+from .weight_bridge import get_param_transform
 
 
 def _iter_sync_named_params(name, param, model_type, orig_dtypes=None):

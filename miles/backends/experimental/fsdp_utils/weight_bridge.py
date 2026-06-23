@@ -19,22 +19,36 @@ the device/DTensor materialization stays in the one place that owns it (update_w
 """
 
 from collections.abc import Callable, Iterable
+from typing import NamedTuple
 
 import torch
 
-# model_type -> list of (matches, expand)
-_REGISTRY: dict[str, list[tuple[Callable, Callable]]] = {}
+
+class ParamTransform(NamedTuple):
+    """A registered train->rollout transform.
+
+    ``matches(name, param) -> bool`` selects which params this transform applies to;
+    ``expand(name, full) -> Iterable[(name, tensor)]`` rewrites the materialized tensor
+    into the rollout stream.
+    """
+
+    matches: Callable[[str, object], bool]
+    expand: Callable[[str, torch.Tensor], Iterable[tuple[str, torch.Tensor]]]
+
+
+# model_type -> registered transforms, tried in registration order
+_REGISTRY: dict[str, list[ParamTransform]] = {}
 
 
 def register_param_transform(model_type: str, matches: Callable, expand: Callable) -> None:
-    _REGISTRY.setdefault(model_type, []).append((matches, expand))
+    _REGISTRY.setdefault(model_type, []).append(ParamTransform(matches, expand))
 
 
 def get_param_transform(name: str, param, model_type: str):
     """Return the ``expand`` fn for the transform matching this param, or None (passthrough)."""
-    for matches, expand in _REGISTRY.get(model_type, ()):
-        if matches(name, param):
-            return expand
+    for transform in _REGISTRY.get(model_type, ()):
+        if transform.matches(name, param):
+            return transform.expand
     return None
 
 
