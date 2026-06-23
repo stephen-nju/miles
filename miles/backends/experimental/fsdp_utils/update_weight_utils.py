@@ -309,9 +309,11 @@ class UpdateWeightFromDistributed(UpdateWeight):
         ]
 
         handles = []
-        # Broadcast parameters one by one with memory management
+        # Free cached blocks once before the batch of broadcasts. (Calling empty_cache per param was
+        # both expensive -- a CUDA sync every iteration -- and largely ineffective: each param_data
+        # stays alive until its async broadcast is waited on below, so it cannot be reclaimed mid-loop.)
+        torch.cuda.empty_cache()
         for _name, param in named_tensors:
-            torch.cuda.empty_cache()
             # Ensure tensor is contiguous and on the right device
             param_data = param.data.contiguous()
 
