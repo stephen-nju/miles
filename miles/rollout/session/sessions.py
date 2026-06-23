@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import math
 import time
 
 from fastapi import Request
@@ -23,6 +24,10 @@ from miles.utils.processing_utils import load_tokenizer
 logger = logging.getLogger(__name__)
 
 
+def _reject_json_constant(value: str):
+    raise ValueError(f"invalid JSON constant: {value}")
+
+
 def _parse_request_body(body: bytes) -> dict:
     return json.loads(body) if body else {}
 
@@ -39,8 +44,8 @@ def _parse_and_validate_response(response_body: bytes) -> tuple[dict, dict, list
     Touches no session state.
     """
     try:
-        response = json.loads(response_body)
-    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        response = json.loads(response_body, parse_constant=_reject_json_constant)
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as e:
         raise UpstreamResponseError(f"upstream response is not valid JSON: {e}") from e
 
     choices = response.get("choices") if isinstance(response, dict) else None
@@ -91,7 +96,7 @@ def _parse_and_validate_response(response_body: bytes) -> tuple[dict, dict, list
                 "upstream response output_token_logprobs entry is not a (logprob, token_id) pair"
             )
         logprob = entry[0]
-        if not isinstance(logprob, (int, float)) or isinstance(logprob, bool):
+        if not isinstance(logprob, (int, float)) or isinstance(logprob, bool) or not math.isfinite(logprob):
             raise UpstreamResponseError(
                 f"upstream response output_token_logprobs logprob is not a number: {logprob!r}"
             )

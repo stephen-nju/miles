@@ -403,7 +403,7 @@ def _compare(before_path: str, after_path: str, out_path: str | None) -> str:
         ("/health max (load)", "health_load_max_ms"),
         ("/health p95 (baseline)", "health_baseline_p95_ms"),
     ]
-    # p95/p99 verdict: "improved" only beyond a noise floor; otherwise "no regression".
+    # p95/p99 verdict: separate material improvements from noise-level changes.
     noise_ms = 25.0
     verdict_lines = []
     for label, key in (("p95", "health_load_p95_ms"), ("p99", "health_load_p99_ms")):
@@ -411,7 +411,11 @@ def _compare(before_path: str, after_path: str, out_path: str | None) -> str:
         if bv is None or av is None:
             verdict_lines.append(f"- {label}: n/a")
             continue
-        if av <= bv + noise_ms:
+        if av < bv - noise_ms:
+            verdict_lines.append(
+                f"- {label}: IMPROVED (before {bv:.1f}ms -> after {av:.1f}ms, beyond ±{noise_ms:.0f}ms noise)"
+            )
+        elif abs(av - bv) <= noise_ms:
             verdict_lines.append(
                 f"- {label}: NO REGRESSION (before {bv:.1f}ms -> after {av:.1f}ms, within ±{noise_ms:.0f}ms noise)"
             )

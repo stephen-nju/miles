@@ -98,7 +98,7 @@ def _patch_mock_chat_response_bad_first():
     return patch.object(MockSGLangServer, "_compute_chat_completions_response", new=patched_chat_response)
 
 
-def _patch_mock_chat_response_bad_logprob_first():
+def _patch_mock_chat_response_bad_logprob_first(bad_logprob="bad-logprob"):
     """Like `_patch_mock_chat_response`, but the FIRST chat response carries a
     non-numeric logprob value (entry[0]) so the session server rejects it with
     UpstreamResponseError (502) instead of letting the bad value flow into
@@ -118,7 +118,7 @@ def _patch_mock_chat_response_bad_logprob_first():
         if state["calls"] == 1 and output_token_logprobs:
             # Corrupt the first response's leading logprob value only.
             _logprob, token_id = output_token_logprobs[0][0], output_token_logprobs[0][1]
-            output_token_logprobs[0] = ("bad-logprob", token_id)
+            output_token_logprobs[0] = (bad_logprob, token_id)
         choice["meta_info"] = {
             "output_token_logprobs": output_token_logprobs,
             "completion_tokens": len(output_token_logprobs),
@@ -625,6 +625,49 @@ class TestSlotReleaseAfterError:
             after = requests.get(f"{env.url}/sessions/{session_id}", timeout=5.0).json()
             assert len(after["records"]) == 1
             assert len(after["metadata"]["accumulated_token_ids"]) > 0
+
+    def test_non_finite_logprob_rejected_without_committing(self):
+        """Raw upstream NaN is accepted by Python's default json decoder; the
+        session boundary must still reject it before recording training data.
+        """
+
+        def process_fn(prompt: str) -> ProcessResult:
+            return ProcessResult(text="ok", finish_reason="stop")
+
+        original_do_proxy = SessionServer.do_proxy
+        state = {"calls": 0}
+
+        async def one_shot_do_proxy(self, request, path, body=None, headers=None):
+            state["calls"] += 1
+            if state["calls"] == 1:
+                return {
+                    "request_body": body,
+                    "response_body": (
+                        b'{"choices":[{"message":{"role":"assistant","content":"ok"},'
+                        b'"meta_info":{"output_token_logprobs":[[NaN,562]],"completion_tokens":1}}]}'
+                    ),
+                    "status_code": 200,
+                    "headers": {"content-type": "application/json"},
+                }
+            return await original_do_proxy(self, request, path, body=body, headers=headers)
+
+        with _router_env(process_fn) as env:
+            session_id = _create_session(env.url)
+            with patch.object(SessionServer, "do_proxy", one_shot_do_proxy):
+                bad = _chat(env.url, session_id, {"messages": [{"role": "user", "content": "hi"}]}, timeout=20.0)
+                assert bad.status_code == 502
+
+                session_state = requests.get(f"{env.url}/sessions/{session_id}", timeout=5.0).json()
+                assert session_state["records"] == []
+                assert session_state["metadata"]["accumulated_token_ids"] == []
+
+                good = _chat(
+                    env.url,
+                    session_id,
+                    {"messages": [{"role": "user", "content": "hi again"}]},
+                    timeout=20.0,
+                )
+                assert good.status_code == 200
 
 
 def _normal_messages(content: str) -> dict:
@@ -1154,12 +1197,15 @@ class TestResponseTokenIdValidation:
 
     def test_non_numeric_logprob_values_rejected(self):
         # entry[0] (the logprob) flows into Sample.rollout_log_probs downstream
-        # (openai_endpoint_utils), so a str / None / bool logprob with an
+        # (openai_endpoint_utils), so a str / None / bool / non-finite logprob with an
         # otherwise-valid token id must still raise rather than being accepted.
         bad_cases = [
             [["bad-logprob", 562]],
             [[None, 562]],
             [[True, 562]],
+            [[float("nan"), 562]],
+            [[float("inf"), 562]],
+            [[float("-inf"), 562]],
         ]
         for logprobs in bad_cases:
             try:
@@ -1167,6 +1213,18 @@ class TestResponseTokenIdValidation:
             except UpstreamResponseError:
                 continue
             raise AssertionError(f"expected UpstreamResponseError for logprob in {logprobs!r}")
+
+    def test_non_standard_json_constants_rejected(self):
+        for constant in ("NaN", "Infinity", "-Infinity"):
+            raw = (
+                b'{"choices":[{"message":{"role":"assistant","content":"ok"},'
+                b'"meta_info":{"output_token_logprobs":[[' + constant.encode() + b',562]],"completion_tokens":1}}]}'
+            )
+            try:
+                _parse_and_validate_response(raw)
+            except UpstreamResponseError:
+                continue
+            raise AssertionError(f"expected UpstreamResponseError for JSON constant {constant}")
 
     def test_sglang_triples_with_token_text_accepted(self):
         # SGLang emits [logprob, token_id, token_text] triples; len > 2 is normal
