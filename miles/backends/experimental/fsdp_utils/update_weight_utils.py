@@ -33,7 +33,7 @@ from .dtensor import gather_full_param
 
 # Per-model-type train->rollout name/shape transforms (see weight_bridge.py): e.g. split
 # transformers>=5.6 batched qwen3_moe experts into the per-expert names SGLang wants.
-from .weight_bridge import get_param_transform
+from .adaptations.weight_bridge import get_param_transform
 
 
 def _iter_sync_named_params(name, param, model_type, orig_dtypes=None):

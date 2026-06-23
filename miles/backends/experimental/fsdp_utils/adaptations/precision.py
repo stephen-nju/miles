@@ -22,8 +22,13 @@ class PrecisionPolicy:
     keep_fp32_master: bool = False  # keep an fp32 master copy; downcast to on-disk dtype at weight sync
 
 
-# model_types (matched as a substring of model_type) whose FSDP2 bf16 reshard needs an fp32 master
-_FP32_MASTER_TYPES = ("glm4_moe_lite",)
+# model_types (matched as a substring of model_type) whose FSDP2 bf16 reshard needs an fp32 master.
+# Archs register themselves in their spec (adaptations/specs/) so this module stays pure mechanism.
+_FP32_MASTER_TYPES: set[str] = set()
+
+
+def register_fp32_master_type(model_type: str) -> None:
+    _FP32_MASTER_TYPES.add(model_type)
 
 
 def resolve_precision_policy(hf_config, args) -> PrecisionPolicy:

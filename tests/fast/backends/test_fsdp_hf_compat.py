@@ -11,7 +11,7 @@ Covers:
 import torch
 
 from miles.backends.experimental.fsdp_utils.update_weight_utils import _iter_sync_named_params
-from miles.backends.experimental.fsdp_utils.weight_bridge import _qwen3_moe_expand, get_param_transform
+from miles.backends.experimental.fsdp_utils.adaptations.weight_bridge import _qwen3_moe_expand, get_param_transform
 
 
 def test_split_gate_up_proj_rows_and_names():
@@ -92,7 +92,7 @@ def test_is_mamba_hybrid_gating():
     # re-inits dt_bias + out_proj post-load); it must be a no-op gate for everything else.
     from types import SimpleNamespace
 
-    from miles.backends.experimental.fsdp_utils.post_load_fixups import _is_mamba_hybrid
+    from miles.backends.experimental.fsdp_utils.adaptations.post_load_fixups import _is_mamba_hybrid
 
     assert _is_mamba_hybrid(SimpleNamespace(model_type="nemotron_h"))
     assert _is_mamba_hybrid(SimpleNamespace(model_type="mamba2"))
@@ -108,7 +108,7 @@ def test_post_load_fixups_registry():
     # The clobber-reload is registered in the post_load_fixups registry, gated to Mamba/hybrid archs.
     from types import SimpleNamespace
 
-    from miles.backends.experimental.fsdp_utils.post_load_fixups import _FIXUPS
+    from miles.backends.experimental.fsdp_utils.adaptations.post_load_fixups import _FIXUPS
 
     by_name = {f.name: f for f in _FIXUPS}
     assert "mamba_clobber_reload" in by_name
@@ -122,7 +122,7 @@ def test_weight_bridge_registry():
     # a registered transform gets its params rewritten; unregistered types stream verbatim.
     import torch
 
-    from miles.backends.experimental.fsdp_utils.weight_bridge import (
+    from miles.backends.experimental.fsdp_utils.adaptations.weight_bridge import (
         get_param_transform,
         register_param_transform,
     )
@@ -148,7 +148,7 @@ def test_model_patch_registry_gating():
     # Verify the predicates gate correctly (s_aux always; config-checks need a config). Packed-sequence
     # layout patches (GDN, ...) moved out of this registry into the unified packing registry
     # (test_packing_registry below); apply_hf_compat_patches now dispatches them via apply_packing.
-    from miles.backends.experimental.fsdp_utils.hf_compat_patches import _MODEL_PATCH_HOOKS
+    from miles.backends.experimental.fsdp_utils.adaptations.class_patches import _MODEL_PATCH_HOOKS
 
     by_name = {h.name: h for h in _MODEL_PATCH_HOOKS}
     # the three expected hooks are registered, in order (GDN packing no longer a ModelPatchHook)
@@ -174,7 +174,7 @@ def test_model_patch_registry_gating():
 
 def test_packed_seq_context_boundaries():
     # The shared boundary derivation (formerly duplicated verbatim in nemotron_h.py + qwen3_5_moe.py).
-    from miles.backends.experimental.fsdp_utils.packing.boundaries import packed_seq_context
+    from miles.backends.experimental.fsdp_utils.adaptations.packing.boundaries import packed_seq_context
 
     # single document / non-packed / wrong shape -> None (packing is a no-op)
     assert packed_seq_context(None) is None
@@ -199,7 +199,7 @@ def test_packing_registry():
     # NemotronH is post-load-lifetime, and archs that pack natively / don't pack match nothing.
     from types import SimpleNamespace
 
-    from miles.backends.experimental.fsdp_utils.packing import get_packing_patches
+    from miles.backends.experimental.fsdp_utils.adaptations.packing import get_packing_patches
 
     gdn = SimpleNamespace(model_type="qwen3_5_moe", layer_types=["linear_attention", "full_attention"])
     nemo = SimpleNamespace(model_type="nemotron_h")

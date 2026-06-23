@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import torch
 
-from miles.backends.experimental.fsdp_utils.precision import (
+from miles.backends.experimental.fsdp_utils.adaptations.precision import (
     apply_fp32_master,
     resolve_precision_policy,
 )

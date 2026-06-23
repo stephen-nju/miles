@@ -103,8 +103,8 @@ class FSDPTrainRayActor(TrainRayActor):
         # FSDP trains stock HF modeling: apply HF-version compat patches, then the config-lifetime
         # packed-sequence patches (GatedDeltaNet class-forward patches, before construction). No-op
         # for archs that pack natively (glm MLA) or don't pack (dense Qwen3, qwen3_moe).
-        from .hf_compat_patches import apply_hf_compat_patches
-        from .packing import apply_packing
+        from .adaptations.class_patches import apply_hf_compat_patches
+        from .adaptations.packing import apply_packing
 
         apply_hf_compat_patches(self.hf_config, self.args)
         apply_packing(None, self.hf_config, "config")
@@ -123,7 +123,7 @@ class FSDPTrainRayActor(TrainRayActor):
 
         # Precision policy: FSDP MixedPrecisionPolicy dtypes + whether to keep an fp32 master copy
         # (glm4_moe_lite, whose bf16 reshard would otherwise perturb weights ~1 ULP). See precision.py.
-        from .precision import apply_fp32_master, resolve_precision_policy
+        from .adaptations.precision import apply_fp32_master, resolve_precision_policy
 
         precision = resolve_precision_policy(self.hf_config, self.args)
         if precision.keep_fp32_master:
@@ -132,7 +132,7 @@ class FSDPTrainRayActor(TrainRayActor):
         # Post-load weight fixups: re-assert the checkpoint over any param from_pretrained clobbered
         # post-load (NemotronH Mamba2 _init_weights re-inits mixer.dt_bias + out_proj). Registry-
         # dispatched + arch-gated; no-op for archs that need no fixup.
-        from .post_load_fixups import apply_post_load_fixups
+        from .adaptations.post_load_fixups import apply_post_load_fixups
 
         apply_post_load_fixups(model, self.hf_config, self.args.hf_checkpoint)
 

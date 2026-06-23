@@ -1,11 +1,12 @@
-"""Register the GatedDeltaNet (Qwen3.5/3.6, Qwen3-Next) packed-doc reset as a config-lifetime patch.
+"""Qwen3.5/3.6/Qwen3-Next (GatedDeltaNet) adaptation.
 
-The kernel logic lives in ``models/qwen3_5_moe.py`` (class-forward patches that feed cu_seqlens to
-fla chunk/recurrent_gated_delta_rule and seq_idx to causal_conv1d_fn per packed document). This spec
-only wires that proven patch into the unified packing registry.
+The packed-doc reset feeds cu_seqlens to fla chunk/recurrent_gated_delta_rule and seq_idx to
+causal_conv1d_fn per packed document. It patches the DecoderLayer/GatedDeltaNet class forwards
+before construction, so it registers at the config lifetime. Kernel logic lives in
+``models/qwen3_5_moe.py``.
 """
 
-from ..registry import PackingPatch, register_packing_patch
+from ..packing.registry import PackingPatch, register_packing_patch
 
 
 def _applies(hf_config) -> bool:

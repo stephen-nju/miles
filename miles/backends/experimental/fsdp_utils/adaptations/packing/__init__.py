@@ -7,7 +7,6 @@ archs plug in by registering a ``PackingPatch`` in ``specs/`` (or registering no
 arch packs natively). See ``boundaries.PackedSeqContext`` for the shared cu_seqlens/seq_idx.
 """
 
-from . import specs  # noqa: F401  (triggers per-arch PackingPatch registration)
 from .boundaries import PackedSeqContext, packed_seq_context
 from .registry import (
     PackingPatch,

@@ -111,4 +111,5 @@ def _reload_clobbered_from_disk(model, ckpt_path, tol=1e-3) -> int:
     return reloaded
 
 
-register_post_load_fixup(PostLoadFixup("mamba_clobber_reload", _is_mamba_hybrid, _reload_clobbered_from_disk))
+# ``_is_mamba_hybrid`` + ``_reload_clobbered_from_disk`` are reusable mechanism; the arch that needs
+# them (NemotronH) registers the fixup in its spec (adaptations/specs/nemotron_h.py).

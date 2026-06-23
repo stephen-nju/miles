@@ -136,34 +136,13 @@ def _has_config(hf_config) -> bool:
     return hf_config is not None
 
 
-def _is_qwen3_moe(hf_config) -> bool:
-    return str(getattr(hf_config, "model_type", "") or "") == "qwen3_moe"
-
-
-def _apply_qwen3_moe_moe_patch(hf_config, args) -> None:
-    """qwen3_moe needs a MoE-block patch before construction; the variant depends on the run mode.
-
-    true_on_policy_mode swaps in the batch-invariant Qwen3MoeSparseMoeBlock so train logits match the
-    sglang rollout; otherwise the legacy graph patch (a no-op on transformers>=5.6 batched experts) is
-    applied. Imports are lazy because the true-on-policy path pulls sglang fused-MoE kernels that don't
-    exist for every sglang build. The backend-level enable_batch_invariant_mode stays in the actor.
-    """
-    if getattr(args, "true_on_policy_mode", False):
-        from .models.qwen3_moe import apply_true_on_policy_patch_for_qwen3_moe
-
-        apply_true_on_policy_patch_for_qwen3_moe()
-    else:
-        from .models.qwen3_moe_hf import apply_fsdp_moe_patch
-
-        apply_fsdp_moe_patch()
-
-
 register_model_patch(ModelPatchHook("flash_attn_saux_guard", _always, lambda cfg, args: apply_flash_attn_saux_guard()))
 register_model_patch(ModelPatchHook("fp8_checkpoint_guard", _has_config, lambda cfg, args: check_fp8_checkpoint(cfg)))
 register_model_patch(
     ModelPatchHook("dsa_train_infer_warn", _has_config, lambda cfg, args: check_train_infer_consistency(cfg))
 )
-register_model_patch(ModelPatchHook("qwen3_moe_moe_patch", _is_qwen3_moe, _apply_qwen3_moe_moe_patch))
+# Per-arch model patches (e.g. the qwen3_moe MoE-block patch) register themselves in their spec
+# (adaptations/specs/), so this module keeps only the generic, always-applicable HF-compat patches.
 
 
 def apply_hf_compat_patches(hf_config=None, args=None) -> None:
