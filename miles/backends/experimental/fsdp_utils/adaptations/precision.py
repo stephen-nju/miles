@@ -1,13 +1,9 @@
 """Precision policy for the FSDP backend.
 
-Resolves, per model, the FSDP ``MixedPrecisionPolicy`` dtypes and whether to keep an fp32 master
-copy of the weights. Most archs train and reshard in bf16 directly; ``glm4_moe_lite`` keeps an
-fp32 master because the FSDP2 bf16 reshard perturbs stored weights ~1 bf16 ULP vs a clean disk
-load, which surfaces as a train<->rollout logprob gap.
-
-This is the precision half of the per-arch adaptation layer (alongside weight_bridge,
-class_patches, packing, post_load_fixups); a new arch that needs an fp32 master calls
-``register_fp32_master_type`` in its spec (adaptations/specs/) instead of editing the actor.
+Resolves, per model, the FSDP ``MixedPrecisionPolicy`` dtypes and whether to keep an fp32 master copy.
+Most archs train and reshard in bf16; ``glm4_moe_lite`` keeps an fp32 master because the FSDP2 bf16
+reshard perturbs weights ~1 bf16 ULP vs a clean disk load, surfacing as a train/rollout logprob gap.
+A new arch needing an fp32 master calls ``register_fp32_master_type`` in its spec.
 """
 
 from dataclasses import dataclass
@@ -22,8 +18,7 @@ class PrecisionPolicy:
     keep_fp32_master: bool = False  # keep an fp32 master copy; downcast to on-disk dtype at weight sync
 
 
-# model_types (matched as a substring of model_type) whose FSDP2 bf16 reshard needs an fp32 master.
-# Archs register themselves in their spec (adaptations/specs/) so this module stays pure mechanism.
+# model_types (substring-matched) whose FSDP2 bf16 reshard needs an fp32 master; registered in specs.
 _FP32_MASTER_TYPES: set[str] = set()
 
 
@@ -42,11 +37,9 @@ def resolve_precision_policy(hf_config, args) -> PrecisionPolicy:
 def apply_fp32_master(model):
     """Convert ``model`` to an fp32 master in place, recording each param's on-disk dtype first.
 
-    The fp32 master is bit-exact across the FSDP2 reshard; the weight sync downcasts it back to each
-    param's on-disk dtype so sglang receives exactly what a clean disk load produces (compute still
-    runs bf16 via MixedPrecisionPolicy). Dtypes are recorded BEFORE the float32 cast so fp32-on-disk
-    params (e.g. glm's ``e_score_correction_bias``) stay fp32 -- casting those to bf16 would flip MoE
-    routing. update_weight_utils reads ``model._fsdp_sync_orig_dtypes``.
+    The weight sync downcasts the master back to each param's on-disk dtype (compute still runs bf16 via
+    MixedPrecisionPolicy). Dtypes are recorded BEFORE the cast so fp32-on-disk params (e.g. glm's
+    ``e_score_correction_bias``) stay fp32 -- casting those to bf16 would flip MoE routing.
     """
     orig_dtypes = {name: p.dtype for name, p in model.state_dict().items()}
     model = model.to(torch.float32)

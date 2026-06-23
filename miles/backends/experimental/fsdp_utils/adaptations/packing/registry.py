@@ -1,24 +1,11 @@
 """Registry that unifies packed-sequence layout handling across FSDP-backend architectures.
 
-Stateful archs (GatedDeltaNet, Mamba2 hybrid, ...) each need to reset their per-document state
-under THD packing, but they hook different methods/kernels. Rather than a hardcoded
-``if "nemotron_h" in model_type: ...`` in the actor plus a separate ModelPatchHook for GDN, every
-packing arch registers a ``PackingPatch`` here and the actor dispatches once per lifetime. Archs
-that pack register a patch; archs that need nothing (e.g. ``glm4_moe_lite``, whose MLA already does
-native HF varlen via FlashAttentionKwargs) simply don't — ``apply_packing`` is a no-op for them.
-All patches share the one boundary derivation in ``boundaries.py``.
-
-This is the third FSDP-backend registry, alongside ``weight_bridge`` (train->rollout param
-contract) and ``class_patches.ModelPatchHook`` (config-time HF-compat patches); a new arch
-plugs into a registry instead of editing a sync/patch/dispatch loop.
-
-Two lifetimes, because the archs patch at different times:
-  * ``"config"``    — patch the transformers *classes* before model construction (GatedDeltaNet
-                      patches ``DecoderLayer``/``GatedDeltaNet`` class forwards); ``apply()`` takes
-                      no model.
-  * ``"post_load"`` — patch the *instantiated* model after ``from_pretrained`` (NemotronH's remote
-                      ``trust_remote_code`` modeling needs the live module tree to find the Mamba2
-                      mixer + attention classes); ``apply(model)`` takes the model.
+Stateful archs (GatedDeltaNet, Mamba2 hybrid, ...) each reset per-document state under THD packing but
+hook different methods/kernels. Each registers a ``PackingPatch`` and the actor dispatches once per
+lifetime; archs that need nothing (e.g. ``glm4_moe_lite``) just don't register. All patches share the
+boundary derivation in ``boundaries.py``. Two lifetimes:
+  * ``"config"``    — patch the transformers classes before model construction; ``apply()`` takes no model.
+  * ``"post_load"`` — patch the instantiated model after ``from_pretrained``; ``apply(model)`` takes it.
 """
 
 from collections.abc import Callable
@@ -45,12 +32,8 @@ def get_packing_patches(hf_config, lifetime: str) -> list[PackingPatch]:
 
 
 def apply_packing(target, hf_config, lifetime: str) -> list[str]:
-    """Apply every registered packing patch matching this config + lifetime. Idempotent.
-
-    ``target`` is the instantiated model for ``lifetime == "post_load"`` and ignored for
-    ``"config"``. Returns the names of the patches that fired (for logging/tests). Empty when no
-    arch matches — e.g. dense Qwen3, qwen3_moe, or glm4_moe_lite.
-    """
+    """Apply every registered packing patch matching this config + lifetime (idempotent). ``target`` is the
+    model for ``post_load``, ignored for ``config``. Returns the names that fired (empty when no arch matches)."""
     fired = []
     for p in get_packing_patches(hf_config, lifetime):
         applied = p.apply(target) if lifetime == "post_load" else p.apply()

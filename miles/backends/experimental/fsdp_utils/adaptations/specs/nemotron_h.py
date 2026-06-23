@@ -1,9 +1,5 @@
-"""NemotronH (Mamba2 hybrid) adaptations.
-
-Two post-load hooks: the packed-doc reset (resets Mamba2 conv+scan via seq_idx + attention via varlen
-cu_seqlens per packed document) and the clobber-reload (re-asserts the checkpoint over mixer params
-that transformers' _init_weights re-initializes after loading). Both need the instantiated model.
-"""
+"""NemotronH (Mamba2 hybrid) adaptations: a post-load packed-doc reset and a clobber-reload that
+re-asserts the checkpoint over mixer params transformers' _init_weights re-inits after loading."""
 
 from ..packing.registry import PackingPatch, register_packing_patch
 from ..post_load_fixups import PostLoadFixup, _is_mamba_hybrid, _reload_clobbered_from_disk, register_post_load_fixup

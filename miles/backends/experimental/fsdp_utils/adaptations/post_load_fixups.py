@@ -1,14 +1,8 @@
 """Post-load weight fixups for the FSDP backend.
 
-Some stock-HF architectures corrupt loaded weights during ``from_pretrained``: NemotronH's Mamba2
-``_init_weights`` runs AFTER weight loading and re-initializes mixer special-init params (every
-layer's ``mixer.dt_bias`` + ``mixer.out_proj.weight``). The FSDP backend would then train on those
-wrong values and sync them to the rollout. Each affected arch registers a fixup that runs on the
-instantiated model + checkpoint path and re-asserts disk ground truth.
-
-This is the FSDP backend's fourth registry, alongside ``weight_bridge`` (train->rollout param
-contract), ``class_patches.ModelPatchHook`` (config-time HF-compat patches), and ``packing``
-(packed-sequence layout). A new arch registers a fixup here instead of editing the actor.
+Some stock-HF archs corrupt loaded weights during ``from_pretrained`` (e.g. NemotronH's Mamba2
+``_init_weights`` runs after loading and re-inits every layer's ``mixer.dt_bias`` + ``mixer.out_proj``).
+Each affected arch registers a fixup that re-asserts the on-disk values over what from_pretrained clobbered.
 """
 
 import glob
@@ -38,12 +32,7 @@ def register_post_load_fixup(fixup: PostLoadFixup) -> None:
 
 
 def apply_post_load_fixups(model, hf_config, ckpt_path) -> list[str]:
-    """Run every registered fixup whose arch-predicate matches. Returns the names that fired.
-
-    Runs only where weights are materialized (rank-0 CPU load); meta-device ranks are skipped
-    inside each fixup and get the corrected value via the rank-0 broadcast in
-    ``_fsdp2_load_full_state_dict``.
-    """
+    """Run every registered fixup whose arch-predicate matches; return the names that fired."""
     fired = []
     for f in _FIXUPS:
         if f.applies_to(hf_config) and f.apply(model, ckpt_path):
@@ -51,10 +40,7 @@ def apply_post_load_fixups(model, hf_config, ckpt_path) -> list[str]:
     return fired
 
 
-# ------------------------------------------------------------------------------------------------
-# NemotronH / Mamba2-hybrid: transformers' _init_weights re-inits mixer.dt_bias + out_proj AFTER
-# loading; re-assert the on-disk checkpoint (ground truth) over any param it clobbered.
-# ------------------------------------------------------------------------------------------------
+# NemotronH / Mamba2-hybrid: _init_weights re-inits mixer params after loading; re-assert disk values.
 def _is_mamba_hybrid(hf_config) -> bool:
     """True for Mamba/SSM-hybrid archs whose HF `_init_weights` clobbers loaded weights post-load."""
     model_type = str(getattr(hf_config, "model_type", "") or "").lower()
@@ -66,12 +52,8 @@ def _is_mamba_hybrid(hf_config) -> bool:
 
 
 def _reload_clobbered_from_disk(model, ckpt_path, tol=1e-3) -> int:
-    """Reload every param whose materialized value differs from the on-disk checkpoint by > ``tol``.
-
-    Gated upstream to Mamba/hybrid archs so it never reverts an intended from_pretrained transform
-    elsewhere. Meta-device ranks are skipped (they get the corrected value via the rank-0 broadcast).
-    Returns the count of params re-asserted.
-    """
+    """Reload params whose materialized value differs from the on-disk checkpoint by > ``tol`` (meta-device
+    ranks skipped; they get the corrected value via the rank-0 broadcast). Returns the count re-asserted."""
     try:
         from safetensors import safe_open
     except Exception:  # pragma: no cover
@@ -111,5 +93,4 @@ def _reload_clobbered_from_disk(model, ckpt_path, tol=1e-3) -> int:
     return reloaded
 
 
-# ``_is_mamba_hybrid`` + ``_reload_clobbered_from_disk`` are reusable mechanism; the arch that needs
-# them (NemotronH) registers the fixup in its spec (adaptations/specs/nemotron_h.py).
+# NemotronH registers the fixup using these helpers in its spec (adaptations/specs/nemotron_h.py).

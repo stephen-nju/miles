@@ -1,27 +1,10 @@
-"""Reset NemotronH state at packed-document boundaries (FSDP backend).
+"""Reset NemotronH Mamba2 (conv+SSM) and attention state at packed-document boundaries (FSDP packing).
 
-The FSDP backend packs several documents into one forward row (THD packing under
-``--use-dynamic-batch-size``; with short responses many docs share a row). NemotronH is a hybrid of
-Mamba2 and attention layers, and BOTH are stateful across the packed row:
-  * the Mamba2 mixer runs its causal-conv1d + chunked selective-scan over the whole row, so conv/SSM
-    state bleeds across documents;
-  * the attention layers run one big causal block over the whole row (the decoder layer passes only
-    ``cache_position`` and production passes ``attention_mask=None``), so they attend across documents.
-Both must reset per document, exactly like the qwen3_5_moe GatedDeltaNet packing fix (which reset both
-the stateful op and attention). Resetting only ONE pathway is *worse* than resetting neither — the two
-become inconsistent. This packed-doc bleed is the dominant cause of the nemotron FSDP train/rollout
-logprob gap.
-
-The fix: derive per-document boundaries from the packed
-``position_ids`` (which reset to 0 at each document start) and
-  * feed ``seq_idx`` to the Mamba mixer's ``causal_conv1d_fn`` + ``mamba_chunk_scan_combined`` (run the
-    stock un-fused branch so both kernels see it; the fully-fused kernel can't consume seq_idx);
-  * run the attention layers as varlen ``flash_attn_varlen_func`` with ``cu_seqlens`` so each document
-    attends only within itself.
-position_ids does not reach the mixers in this (remote trust_remote_code) modeling, so we stash the
-boundaries on every Mamba2 mixer + attention module from ``NemotronHForCausalLM.forward`` (which has
-position_ids). They are a pure function of the constant position_ids -> safe under gradient
-checkpointing. No-op when not packing (single doc -> boundaries are None).
+NemotronH is a Mamba2/attention hybrid; both are stateful and bleed across documents packed into one
+forward row, which dominates its train/rollout logprob gap. We derive per-doc boundaries from
+position_ids and feed seq_idx to the mixer's un-fused conv/scan kernels + run attention as varlen
+flash-attn with cu_seqlens, so each doc stays isolated. Boundaries are stashed from the CausalLM
+forward (position_ids don't reach the mixers otherwise). No-op when not packing.
 """
 
 import functools
@@ -147,7 +130,6 @@ def apply_nemotron_h_sglang_match_patch(model):
         cn = type(mod).__name__
         if mixer_cls is None and cn.endswith("Mamba2Mixer") and hasattr(type(mod), "cuda_kernels_forward"):
             mixer_cls = type(mod)
-        # the attention mixer is the .mixer of a block whose block_type == "attention"
         if attn_cls is None and getattr(mod, "block_type", None) == "attention" and hasattr(mod, "mixer"):
             attn_cls = type(mod.mixer)
     if mixer_cls is None:

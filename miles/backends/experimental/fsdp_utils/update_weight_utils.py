@@ -28,22 +28,14 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
-# Per-model-type train->rollout name/shape transforms (see weight_bridge.py): e.g. split
-# transformers>=5.6 batched qwen3_moe experts into the per-expert names SGLang wants.
 from .adaptations.weight_bridge import get_param_transform
 from .dtensor import gather_full_param
 
 
 def _iter_sync_named_params(name, param, model_type, orig_dtypes=None):
-    """Yield (name, tensor) pairs to stream to the rollout engine, applying the registered
-    WeightBridge transform for this model type (e.g. splitting batched MoE experts into the
-    per-expert names SGLang requires). Params with no matching transform stream unchanged so the
-    caller's existing DTensor/async path is preserved.
-
-    ``orig_dtypes`` (optional) maps param name -> on-disk dtype: when an fp32 master is kept (glm4_moe_lite,
-    so the FSDP reshard is bit-exact), the materialized tensor is downcast back to its on-disk dtype here
-    so SGLang receives exactly what a clean disk load produces.
-    """
+    """Yield (name, tensor) pairs for the rollout engine, applying the registered WeightBridge transform
+    for this model_type (e.g. splitting batched MoE experts); params with no transform stream unchanged.
+    ``orig_dtypes`` (fp32-master archs) downcasts the materialized tensor back to its on-disk dtype."""
     expand = get_param_transform(name, param, model_type)
     if expand is None:
         yield name, param
@@ -86,8 +78,7 @@ class UpdateWeight(abc.ABC):
         bucket = []
         bucket_size = 0
         model_type = getattr(getattr(self.model, "config", None), "model_type", "")
-        # When an fp32 master is kept (glm4_moe_lite — so the FSDP reshard is bit-exact), restore each
-        # param's on-disk dtype before streaming so SGLang receives exactly what a clean disk load gives.
+        # fp32-master archs (glm4_moe_lite): restore each param's on-disk dtype before streaming
         orig_dtypes = getattr(self.model, "_fsdp_sync_orig_dtypes", None)
         for raw_name, raw_param in self.model.state_dict().items():
             for name, param in _iter_sync_named_params(raw_name, raw_param, model_type, orig_dtypes):
@@ -98,8 +89,7 @@ class UpdateWeight(abc.ABC):
                     bucket = []
                     bucket_size = 0
 
-                # passthrough params only; bridge-split experts are pre-cast in _iter_sync_named_params.
-                # async gather: the cast to target_dtype is deferred until after .wait() (below).
+                # passthrough params only (split experts are pre-cast); the target_dtype cast is deferred to post-wait
                 target_dtype = orig_dtypes.get(name) if orig_dtypes is not None else None
                 param = gather_full_param(param, async_op=True)
                 bucket.append((name, param, target_dtype))
@@ -121,8 +111,7 @@ class UpdateWeight(abc.ABC):
         for name, param, target_dtype in bucket:
             if hasattr(param, "wait"):
                 param = param.wait()
-            # Downcast the fp32 master to the on-disk dtype; round-to-nearest-even reproduces the
-            # disk bf16 bit-for-bit. None target = no cast.
+            # downcast the fp32 master to its on-disk dtype (round-to-nearest-even reproduces disk bf16); None = no cast
             if target_dtype is not None and param.dtype != target_dtype:
                 param = param.to(target_dtype)
             resolved.append((name, param))
@@ -134,12 +123,8 @@ class UpdateWeight(abc.ABC):
 
 
 class UpdateWeightFromTensor(UpdateWeight):
-    """Push model weights to rollout engines using tensors.
-
-    Streams parameters in size-bounded buckets; optionally groups tensors by dtype
-    and flattens per dtype, gathers per-rank blobs to the source, and issues one
-    RPC per dtype per bucket (or one per bucket if not flattened).
-    """
+    """Push model weights to rollout engines as tensors, streamed in size-bounded buckets (optionally
+    grouped + flattened per dtype, one RPC per dtype per bucket)."""
 
     def connect_rollout_engines(
         self,
@@ -148,11 +133,7 @@ class UpdateWeightFromTensor(UpdateWeight):
         engine_gpu_counts: Sequence[int] | None = None,
         engine_gpu_offsets: Sequence[int] | None = None,
     ) -> None:
-        """Attach rollout engines and create per-engine IPC (Gloo) groups.
-
-        Sets the gather source rank, engine handle, and `tp_rank` within the
-        engine's local group.
-        """
+        """Attach rollout engines and create per-engine IPC (Gloo) groups (sets gather src rank, engine, tp_rank)."""
         self.rollout_engines = rollout_engines
 
         # Here we assume the gpu id of rollout engines and train actors are the same.
@@ -168,14 +149,11 @@ class UpdateWeightFromTensor(UpdateWeight):
                 self._ipc_gather_src = start_rank
                 self._ipc_gather_group = new_group
                 self._ipc_engine = engine
-                # Calculate TP rank within this SGLang engine group
                 self.tp_rank = dist.get_rank() - start_rank
 
     def update_bucket_weights(self, named_tensors, weight_version=None) -> None:
         monkey_patch_torch_reductions()
-        # Use flattened bucket approach similar to Megatron
         logger.info("Using flattened tensor bucket")
-        # Group tensors by dtype (same as Megatron)
         named_tensors_by_dtypes = {}
         for name, tensor in named_tensors:
             dtype = tensor.dtype
@@ -183,7 +161,6 @@ class UpdateWeightFromTensor(UpdateWeight):
                 named_tensors_by_dtypes[dtype] = []
             named_tensors_by_dtypes[dtype].append((name, tensor))
 
-        # Create flattened bucket for each dtype group
         serialized_tensors = []
         for _dtype, named_tensors in named_tensors_by_dtypes.items():
             flattened_tensor_bucket = FlattenedTensorBucket(named_tensors=named_tensors)
@@ -209,9 +186,7 @@ class UpdateWeightFromTensor(UpdateWeight):
         )
 
         if dist.get_rank() == self._ipc_gather_src:
-            # Handle flattened bucket format (same as Megatron approach)
-            # Each rank may have multiple dtype buckets
-            # TODO: here we assume all ranks have the same number of dtypes
+            # TODO: assumes all ranks have the same number of dtype buckets
             num_dtypes = len(gathered_serialized_batches[0])
             assert num_dtypes > 0
             for i in range(num_dtypes):
@@ -253,9 +228,7 @@ class UpdateWeightFromDistributed(UpdateWeight):
         self.rollout_engines = rollout_engines
         self.rollout_engine_lock = rollout_engine_lock
 
-        # For TP:
-        #   1. AllGather parameters to rank 0
-        #   2. Broadcast parameters from rank 0 to all sglang engines
+        # TP weight sync: AllGather params to rank 0, then broadcast from rank 0 to all sglang engines
         self._is_src_rank = dist.get_rank() == 0
         if self._is_src_rank:
             self._group_name = "miles"
@@ -287,11 +260,8 @@ class UpdateWeightFromDistributed(UpdateWeight):
             ray.get(refs)
 
     def update_bucket_weights(self, named_tensors, weight_version=None) -> None:
-        """Send names/dtypes/shapes metadata to engines, then broadcast tensors.
-
-        Ensures tensors are contiguous; when `world_size == 1`, converts DTensors
-        to full tensors prior to `dist.broadcast`.
-        """
+        """Send names/dtypes/shapes metadata to engines, then broadcast the tensors (contiguous;
+        DTensors materialized when world_size == 1)."""
         if not self._is_src_rank or not named_tensors:
             return
 
@@ -307,19 +277,15 @@ class UpdateWeightFromDistributed(UpdateWeight):
         ]
 
         handles = []
-        # Free cached blocks once before the batch of broadcasts. (Calling empty_cache per param was
-        # both expensive -- a CUDA sync every iteration -- and largely ineffective: each param_data
-        # stays alive until its async broadcast is waited on below, so it cannot be reclaimed mid-loop.)
+        # free cached blocks once before the batch (per-param empty_cache was a costly CUDA sync and ineffective)
         torch.cuda.empty_cache()
         for _name, param in named_tensors:
-            # Ensure tensor is contiguous and on the right device
             param_data = param.data.contiguous()
 
             # avoid `DTensor._op_dispatcher.dispatch` has `assert compute_mesh is not None` error
             if dist.get_world_size() == 1 and isinstance(param_data, DTensor):
                 param_data = param_data.full_tensor()
 
-            # Synchronous broadcast to avoid memory buildup
             handles.append(dist.broadcast(param_data, 0, group=self._model_update_groups, async_op=True))
 
         for handle in handles:

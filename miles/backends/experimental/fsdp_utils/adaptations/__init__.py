@@ -1,10 +1,8 @@
 """Per-arch adaptation layer for the FSDP backend.
 
-Pure-mechanism registries -- ``weight_bridge`` (train->rollout param contract), ``class_patches``
-(config-time HF-compat/model patches), ``packing`` (packed-sequence layout), ``post_load_fixups``
-(post-load weight fixups), ``precision`` (fp32-master + MixedPrecision dtypes) -- plus arch-centric
-``specs/`` that register each arch's hooks across them. The actor drives the registries; a new arch
-plugs in by adding ``specs/<arch>.py``.
+Pure-mechanism registries (``weight_bridge``, ``class_patches``, ``packing``, ``post_load_fixups``,
+``precision``) plus arch-centric ``specs/`` that register each arch's hooks across them. The actor drives
+the registries; a new arch plugs in by adding ``specs/<arch>.py``.
 """
 
 from .class_patches import ModelPatchHook, apply_class_patches, register_model_patch

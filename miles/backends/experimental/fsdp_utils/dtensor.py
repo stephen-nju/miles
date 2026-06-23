@@ -1,14 +1,9 @@
 """DTensor materialization for FSDP2 weight export.
 
-FSDP2 holds each parameter as a sharded ``DTensor``; the rollout engine needs the full
-(unsharded) tensor. The sync and async weight-sync paths gather a shard the same way:
-move to CUDA first, then all-gather to ``Replicate`` via ``redistribute``. This module is
-the single home for that idiom and the two collective-backend caveats it has to respect:
-
-  * ``full_tensor()`` on a *CPU* DTensor picks the wrong collective backend, so the move to
-    CUDA must happen before the gather.
-  * ``redistribute`` on a 1-rank mesh trips ``assert compute_mesh is not None``, so
-    ``world_size == 1`` falls back to ``full_tensor()``.
+FSDP2 holds each parameter as a sharded ``DTensor``; the rollout engine needs the full tensor. Both
+weight-sync paths gather it the same way -- move to CUDA first, then all-gather to ``Replicate``. Two
+caveats: ``full_tensor()`` on a CPU DTensor picks the wrong collective backend (so move to CUDA first),
+and ``redistribute`` on a 1-rank mesh trips an assert (so world_size==1 falls back to ``full_tensor()``).
 """
 
 import torch
@@ -19,13 +14,8 @@ from torch.distributed.tensor import DTensor, Replicate
 def gather_full_param(param: torch.Tensor, *, async_op: bool = False) -> torch.Tensor:
     """Materialize a (possibly FSDP2-sharded) param to a full local tensor on CUDA.
 
-    Non-DTensor inputs are returned moved to CUDA, unchanged. A sharded DTensor is
-    all-gathered to ``Replicate`` across every mesh dim and returned as a plain local
-    tensor.
-
-    With ``async_op=True`` the all-gather is issued asynchronously and the returned tensor
-    carries a ``.wait()`` the caller must drain before use; dtype casts and any other
-    consumption must happen post-wait.
+    Non-DTensor inputs are returned moved to CUDA unchanged. With ``async_op=True`` the all-gather is
+    issued async and the returned tensor carries a ``.wait()`` the caller must drain before use.
     """
     full = param.cuda()
     if not isinstance(full, DTensor):

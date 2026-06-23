@@ -1,21 +1,10 @@
-"""WeightBridge: the explicit train->rollout parameter contract for the FSDP backend.
+"""WeightBridge: the registered train->rollout parameter-name/shape contract for the FSDP backend.
 
-The training side (stock HF / FSDP) and the SGLang rollout loader do not always agree on
-parameter *names and shapes*. Each (model_type) that disagrees needs a transform that rewrites
-the streamed ``(name, tensor)`` into what the rollout loader expects — e.g. transformers>=5.6
-stores qwen3_moe experts as one batched ``experts.gate_up_proj`` / ``experts.down_proj`` tensor,
-but SGLang's qwen3_moe loader expects per-expert ``experts.{i}.{gate,up,down}_proj.weight``.
-
-This module makes that contract a first-class, registered object instead of a hardcoded
-``if model_type == ...`` branch. It is the FSDP analogue of the Megatron ``megatron_to_hf``
-converter registry: a new arch registers a ``ParamTransform`` rather than editing the sync loop.
-
-A transform is a pair of callables:
-  * ``matches(name, param) -> bool`` — does this transform apply to this param?
-  * ``expand(name, full) -> Iterable[(name, tensor)]`` — pure tensor logic producing the rollout
-    stream from the *materialized* (unsharded, on-device) tensor.
-Keeping ``expand`` pure (no DTensor/device handling) makes every transform unit-testable on CPU;
-the device/DTensor materialization stays in the one place that owns it (update_weight_utils).
+HF/FSDP training and the SGLang rollout loader don't always agree on param names/shapes (e.g.
+transformers>=5.6 stores qwen3_moe experts as one batched tensor; SGLang wants per-expert names). Each
+disagreeing model_type registers a ParamTransform (a ``matches`` selector + a pure ``expand`` that
+rewrites the materialized tensor) instead of editing the sync loop -- the FSDP analogue of Megatron's
+megatron_to_hf. ``expand`` stays pure (no DTensor/device) so transforms are CPU-unit-testable.
 """
 
 from collections.abc import Callable, Iterable
@@ -25,13 +14,6 @@ import torch
 
 
 class ParamTransform(NamedTuple):
-    """A registered train->rollout transform.
-
-    ``matches(name, param) -> bool`` selects which params this transform applies to;
-    ``expand(name, full) -> Iterable[(name, tensor)]`` rewrites the materialized tensor
-    into the rollout stream.
-    """
-
     matches: Callable[[str, object], bool]
     expand: Callable[[str, torch.Tensor], Iterable[tuple[str, torch.Tensor]]]
 
@@ -52,9 +34,7 @@ def get_param_transform(name: str, param, model_type: str):
     return None
 
 
-# ------------------------------------------------------------------------------------------------
-# qwen3_moe: split transformers>=5.6 batched experts back into the per-expert names SGLang expects.
-# ------------------------------------------------------------------------------------------------
+# qwen3_moe: split transformers>=5.6 batched experts into the per-expert names SGLang expects.
 def _qwen3_moe_matches(name: str, param) -> bool:
     return getattr(param, "dim", lambda: 0)() == 3 and (
         name.endswith(".experts.gate_up_proj") or name.endswith(".experts.down_proj")
@@ -75,6 +55,4 @@ def _qwen3_moe_expand(name: str, full: torch.Tensor) -> Iterable[tuple[str, torc
             yield f"{prefix}.{i}.down_proj.weight", full[i].contiguous()
 
 
-# ``_qwen3_moe_matches`` + ``_qwen3_moe_expand`` are a reusable building block: every arch with the
-# transformers>=5.6 batched-expert layout (qwen3_moe, glm4_moe_lite, ...) registers them in its spec
-# (see adaptations/specs/). The registrations live there, not here, so this module stays pure mechanism.
+# archs with this batched-expert layout (qwen3_moe, glm4_moe_lite, ...) register these in their spec.
