@@ -100,10 +100,14 @@ class FSDPTrainRayActor(TrainRayActor):
                     self.processor = load_processor(self.args.hf_checkpoint, trust_remote_code=True)
             dist.barrier(group=get_gloo_group())
 
-        # FSDP trains stock HF modeling: apply HF-version compat patches.
+        # FSDP trains stock HF modeling: apply HF-version compat patches, then the config-lifetime
+        # packed-sequence patches (GatedDeltaNet class-forward patches, before construction). No-op
+        # for archs that pack natively (glm MLA) or don't pack (dense Qwen3, qwen3_moe).
         from .hf_compat_patches import apply_hf_compat_patches
+        from .packing import apply_packing
 
         apply_hf_compat_patches(self.hf_config)
+        apply_packing(None, self.hf_config, "config")
 
         # Needs hf_config (gates the qwen3_moe-specific MoE patches on model_type), so run after load.
         self._enable_true_on_policy_optimizations(args)
@@ -136,10 +140,8 @@ class FSDPTrainRayActor(TrainRayActor):
 
         # Post-load packed-sequence layout patches that need the instantiated model (NemotronH resets
         # Mamba2 conv+scan via seq_idx on its un-fused branch AND attention via varlen cu_seqlens, both
-        # per packed document). Unified packing registry; no-op for archs that pack natively (glm MLA)
-        # or don't pack (dense Qwen3). New post-load archs register a PackingPatch instead of an if here.
-        from .packing import apply_packing
-
+        # per packed document). Same packing registry, post_load lifetime; no-op for archs that pack
+        # natively (glm MLA) or don't pack (dense Qwen3). (apply_packing imported above.)
         apply_packing(model, self.hf_config, "post_load")
 
         model.train()

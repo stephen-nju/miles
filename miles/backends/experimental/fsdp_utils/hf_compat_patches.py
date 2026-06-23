@@ -173,19 +173,12 @@ def reload_clobbered_checkpoint_params(model, ckpt_path, hf_config, tol=1e-3) ->
     return reloaded
 
 
-def _is_gated_deltanet(hf_config) -> bool:
-    model_type = str(getattr(hf_config, "model_type", "") or "")
-    tc = getattr(hf_config, "get_text_config", lambda: hf_config)()
-    layer_types = getattr(tc, "layer_types", None) or getattr(hf_config, "layer_types", None)
-    return (layer_types is not None and "linear_attention" in layer_types) or "qwen3_5" in model_type
-
-
 class ModelPatchHook:
     """A config-time HF-compat patch: an ``applies_to`` predicate + an ``apply`` action.
 
-    Makes the per-arch dispatch a first-class registry
-    instead of a hardcoded ``if _is_gated_deltanet(...)`` chain. New archs register a hook rather than
-    editing ``apply_hf_compat_patches``. ``applies_to``/``apply`` both take the hf_config (or None);
+    Makes the per-arch dispatch a first-class registry instead of a hardcoded per-arch if-chain.
+    New archs register a hook rather than editing ``apply_hf_compat_patches``.
+    ``applies_to``/``apply`` both take the hf_config (or None);
     self-gating checks (fp8 fail-fast, DSA warn) use ``applies_to=_has_config`` and gate internally.
     """
 
@@ -218,14 +211,10 @@ register_model_patch(ModelPatchHook("dsa_train_infer_warn", _has_config, check_t
 def apply_hf_compat_patches(hf_config=None) -> None:
     """Apply all registered FSDP HF-compat patches. Safe to call once at actor init.
 
-    (The post-load Mamba clobber-reload is applied separately in the actor, since it needs the
-    instantiated model, not just the config — see ``reload_clobbered_checkpoint_params``.)
+    Scope is the ModelPatchHook registry only. The actor driver invokes the other registries
+    around this call: config-lifetime packing before construction, post-load packing and the
+    Mamba clobber-reload after ``from_pretrained`` (those need the instantiated model).
     """
     for hook in _MODEL_PATCH_HOOKS:
         if hook.applies_to(hf_config):
             hook.apply(hf_config)
-    # Config-lifetime packed-sequence layout patches (GatedDeltaNet, ...) go through the unified
-    # packing registry; new packing archs register a PackingPatch there instead of a ModelPatchHook.
-    from .packing import apply_packing
-
-    apply_packing(None, hf_config, "config")

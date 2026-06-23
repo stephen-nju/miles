@@ -2,19 +2,20 @@
 
 The kernel logic lives in ``models/qwen3_5_moe.py`` (class-forward patches that feed cu_seqlens to
 fla chunk/recurrent_gated_delta_rule and seq_idx to causal_conv1d_fn per packed document). This spec
-only wires that proven patch into the unified packing registry; ``applies_to`` reuses the existing
-``_is_gated_deltanet`` predicate (imported lazily to avoid an import cycle).
+only wires that proven patch into the unified packing registry.
 """
 
 from ..registry import PackingPatch, register_packing_patch
 
 
 def _applies(hf_config) -> bool:
+    """True for GatedDeltaNet archs (Qwen3.5/3.6, Qwen3-Next): a linear_attention layer type or qwen3_5."""
     if hf_config is None:
         return False
-    from ...hf_compat_patches import _is_gated_deltanet
-
-    return _is_gated_deltanet(hf_config)
+    model_type = str(getattr(hf_config, "model_type", "") or "")
+    tc = getattr(hf_config, "get_text_config", lambda: hf_config)()
+    layer_types = getattr(tc, "layer_types", None) or getattr(hf_config, "layer_types", None)
+    return (layer_types is not None and "linear_attention" in layer_types) or "qwen3_5" in model_type
 
 
 def _apply():
