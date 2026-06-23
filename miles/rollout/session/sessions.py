@@ -60,7 +60,13 @@ def _parse_and_validate_response(response_body: bytes) -> tuple[dict, dict, list
         )
     output_token_logprobs = meta_info["output_token_logprobs"]
     completion_tokens = meta_info.get("completion_tokens")
-    if not isinstance(output_token_logprobs, list) or not isinstance(completion_tokens, int):
+    # bool is an int subclass; reject it explicitly so a True/False count is not
+    # silently treated as 1/0.
+    if (
+        not isinstance(output_token_logprobs, list)
+        or not isinstance(completion_tokens, int)
+        or isinstance(completion_tokens, bool)
+    ):
         raise UpstreamResponseError("upstream response output_token_logprobs/completion_tokens have invalid types")
     actual_output_logprobs_len = len(output_token_logprobs)
     if actual_output_logprobs_len != completion_tokens:
@@ -70,10 +76,22 @@ def _parse_and_validate_response(response_body: bytes) -> tuple[dict, dict, list
             f"!= completion_tokens={completion_tokens}. "
             f"Please check whether you use the correct SGLang branch which has fix the tokenizer batch decode issue."
         )
-    try:
-        completion_token_ids = [t[1] for t in output_token_logprobs]
-    except (IndexError, TypeError, KeyError) as e:
-        raise UpstreamResponseError(f"upstream response output_token_logprobs entries are malformed: {e}") from e
+    # Each entry must be a (logprob, token_id) pair with an integer token id. A
+    # malformed entry (short/non-sequence, or a str/float/None/bool id) would
+    # silently corrupt the stored trajectory token ids, so reject the whole
+    # response instead of extracting garbage.
+    completion_token_ids: list[int] = []
+    for entry in output_token_logprobs:
+        if not isinstance(entry, (list, tuple)) or len(entry) < 2:
+            raise UpstreamResponseError(
+                "upstream response output_token_logprobs entry is not a (logprob, token_id) pair"
+            )
+        token_id = entry[1]
+        if not isinstance(token_id, int) or isinstance(token_id, bool):
+            raise UpstreamResponseError(
+                f"upstream response output_token_logprobs token id is not an int: {token_id!r}"
+            )
+        completion_token_ids.append(token_id)
     return response, assistant_message, completion_token_ids
 
 

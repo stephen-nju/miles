@@ -35,8 +35,14 @@ import requests
 from starlette.responses import Response
 
 from miles.rollout.session.linear_trajectory import LinearTrajectory
-from miles.rollout.session.session_errors import MessageValidationError, SessionInvariantError, TokenizationError
+from miles.rollout.session.session_errors import (
+    MessageValidationError,
+    SessionInvariantError,
+    TokenizationError,
+    UpstreamResponseError,
+)
 from miles.rollout.session.session_server import SessionServer
+from miles.rollout.session.sessions import _parse_and_validate_response
 from miles.utils.http_utils import find_available_port
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
@@ -1037,3 +1043,51 @@ class TestPassthroughFidelity:
             assert "transfer-encoding" not in lowered
             assert "content-encoding" not in lowered
             assert resp.headers.get("content-type", "").startswith("application/json")
+
+
+class TestResponseTokenIdValidation:
+    """A malformed-but-200 upstream response must be rejected (502) rather than
+    yielding non-integer token ids that would corrupt the stored trajectory."""
+
+    @staticmethod
+    def _payload(output_token_logprobs, completion_tokens=1) -> bytes:
+        import json
+
+        return json.dumps(
+            {
+                "choices": [
+                    {
+                        "message": {"role": "assistant", "content": "ok"},
+                        "meta_info": {
+                            "output_token_logprobs": output_token_logprobs,
+                            "completion_tokens": completion_tokens,
+                        },
+                    }
+                ]
+            }
+        ).encode()
+
+    def test_valid_integer_token_ids_accepted(self):
+        _resp, _msg, ids = _parse_and_validate_response(self._payload([[-0.1, 123], [-0.2, 456]], completion_tokens=2))
+        assert ids == [123, 456]
+
+    def test_non_integer_token_ids_rejected(self):
+        # str / None / float / bool token ids, a non-pair string entry, a short
+        # entry, and a bool completion_tokens must all raise UpstreamResponseError.
+        bad_cases = [
+            ([[-0.1, "x"]], 1),
+            ([[-0.1, None]], 1),
+            ([[-0.1, 1.2]], 1),
+            ([[-0.1, True]], 1),
+            (["ab"], 1),
+            ([[123]], 1),
+            ([[-0.1, 123]], True),
+        ]
+        for logprobs, completion_tokens in bad_cases:
+            try:
+                _parse_and_validate_response(self._payload(logprobs, completion_tokens))
+            except UpstreamResponseError:
+                continue
+            raise AssertionError(
+                f"expected UpstreamResponseError for {logprobs!r}, completion_tokens={completion_tokens!r}"
+            )
