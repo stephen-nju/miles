@@ -118,6 +118,26 @@ async def _request(client: IpcChannel, payload: bytes):
 
 
 @pytest.mark.asyncio
+async def test_create_with_id_invalid_and_duplicate_mapped():
+    """A router-supplied id that is not 32-hex maps to 400; a second create on
+    the same id maps to 409 — never an unmapped 500 from the raw ValueError."""
+
+    worker, backend, client, server = await _worker_and_client()
+    try:
+        bad = await _request(client, encode_request(OP_CREATE_ID, session_id="not-hex"))
+        assert bad.status_code == 400
+
+        sid = new_session_id()
+        assert (await _request(client, encode_request(OP_CREATE_ID, session_id=sid))).status_code == 200
+        dup = await _request(client, encode_request(OP_CREATE_ID, session_id=sid))
+        assert dup.status_code == 409
+    finally:
+        await client.close()
+        await server.close()
+        await backend.aclose()
+
+
+@pytest.mark.asyncio
 async def test_worker_create_chat_get_delete_round_trip():
     worker, backend, client, server = await _worker_and_client()
     try:

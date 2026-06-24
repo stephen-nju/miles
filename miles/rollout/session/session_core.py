@@ -26,7 +26,7 @@ from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 
-from miles.rollout.session.linear_trajectory import SessionRegistry
+from miles.rollout.session.linear_trajectory import _SESSION_ID_RE, SessionRegistry
 from miles.rollout.session.session_errors import (
     SessionBusyError,
     SessionError,
@@ -246,15 +246,22 @@ class SessionCore:
         """Create a session under a router-supplied id (multi-process path).
 
         The router mints the id and routes by it, so the owning worker creates
-        under that exact id. ``create_session_with_id`` raises ValueError on a
-        malformed id (400) or an id that already exists (409, lost-ack retry or
-        a routing bug); both are mapped to a JSON error, never an unhandled 500.
+        under that exact id. ``SessionRegistry.create_session_with_id`` raises a
+        plain ``ValueError`` (NOT a SessionError) on a malformed id or one that
+        already exists — so ``_error_response`` would not map it; we classify it
+        explicitly here. A bad 32-hex shape is a malformed request (400); a
+        collision is a conflict (409, e.g. a lost-ack retry or a routing bug).
+        Neither ever becomes an unmapped 500.
         """
+        if not _SESSION_ID_RE.match(session_id):
+            return _json_response(
+                400, {"error": f"invalid session_id (expected 32-char lowercase hex): {session_id!r}"}
+            )
         try:
             self.registry.create_session_with_id(session_id)
         except ValueError as exc:
-            status = 409 if "already exists" in str(exc) else 400
-            return _json_response(status, {"error": str(exc)})
+            # Reachable only on a collision now (shape pre-validated above).
+            return _json_response(409, {"error": str(exc)})
         return _json_response(200, {"session_id": session_id})
 
     async def get_session(self, session_id: str) -> CoreResponse:
