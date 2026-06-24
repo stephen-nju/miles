@@ -240,7 +240,10 @@ class IpcChannel:
         for task in (self._reader_task, self._writer_task):
             try:
                 await task
-            except (asyncio.CancelledError, Exception):
+            except asyncio.CancelledError:
+                # The reader/writer loops convert all transport errors into a
+                # clean teardown and only re-raise CancelledError, so that is the
+                # only exception awaiting them can surface.
                 pass
 
     @property

@@ -109,9 +109,6 @@ class SessionRouter:
         # its in-flight slot in its done-callback.
         self._ipc_tasks: set[asyncio.Task] = set()
 
-    def _channel_for(self, session_id: str):
-        return self._channels[worker_index_for_session(session_id, self._n_worker)]
-
     def _spawn_ipc_request(self, worker_idx: int, payload: bytes) -> asyncio.Task[bytes]:
         """Start a worker IPC request as a router-owned task and account for it.
 
@@ -225,7 +222,7 @@ class SessionRouter:
             CoreResponse(
                 status_code=200,
                 headers={"content-type": "application/json"},
-                body=_json_bytes(body),
+                body=json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
                 media_type="application/json",
             )
         )
@@ -254,10 +251,6 @@ class SessionRouter:
 
         results = await asyncio.gather(*(_ping(ch) for ch in self._channels))
         return all(results)
-
-
-def _json_bytes(payload: dict) -> bytes:
-    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
 def build_app(router: SessionRouter) -> FastAPI:

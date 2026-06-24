@@ -224,41 +224,29 @@ class SessionServerSupervisor:
 
         procs = self._children()
         for p in procs:
-            _terminate(p)
+            # SIGTERM. The narrow catch covers the is_alive()->terminate() race
+            # (the child can exit in between); join itself is left to fail fast.
+            try:
+                if p.is_alive():
+                    p.terminate()
+            except (ValueError, AttributeError, ProcessLookupError):
+                pass
         deadline = time.time() + _TERM_GRACE
         for p in procs:
-            remaining = max(0.0, deadline - time.time())
-            try:
-                p.join(timeout=remaining)
-            except Exception:
-                pass
+            p.join(timeout=max(0.0, deadline - time.time()))
         for p in procs:
             if p.is_alive():
-                _kill(p)
+                # SIGKILL the stragglers; narrow catch for the already-reaped race.
                 try:
-                    p.join(timeout=2.0)
-                except Exception:
+                    if p.pid is not None:
+                        os.kill(p.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
                     pass
+                p.join(timeout=2.0)
 
 
 def _safe_close(s: socket.socket) -> None:
     try:
         s.close()
     except OSError:
-        pass
-
-
-def _terminate(p) -> None:
-    try:
-        if p.is_alive():
-            p.terminate()  # SIGTERM
-    except (ValueError, AttributeError, ProcessLookupError):
-        pass
-
-
-def _kill(p) -> None:
-    try:
-        if p.pid is not None:
-            os.kill(p.pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError, OSError):
         pass

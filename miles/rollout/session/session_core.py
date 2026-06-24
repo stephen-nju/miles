@@ -488,16 +488,17 @@ class SessionCore:
         headers: dict[str, str],
         body: bytes,
     ) -> CoreResponse:
-        try:
-            result = await self.backend.do_proxy(
-                ProxyRequest(method=method, query=query),
-                path,
-                body=body,
-                headers=headers,
-            )
-            return _proxy_result_to_core_response(result)
-        except SessionError as exc:
-            return self._error_response(exc)
+        # No SessionError catch here: proxy is pure passthrough — it never
+        # touches the registry, and do_proxy only ever returns (it maps its own
+        # httpx.TransportError to a 502 result). The sibling handlers that DO
+        # query the registry keep their SessionError mapping.
+        result = await self.backend.do_proxy(
+            ProxyRequest(method=method, query=query),
+            path,
+            body=body,
+            headers=headers,
+        )
+        return _proxy_result_to_core_response(result)
 
     def _error_response(self, exc: SessionError) -> CoreResponse:
         return _json_response(exc.status_code, {"error": str(exc)})
