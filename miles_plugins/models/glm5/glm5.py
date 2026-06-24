@@ -92,6 +92,7 @@ class DSAMultiLatentAttention(Attention):
         cp_comm_type: str | None = None,
         model_comm_pgs=None,
         pg_collection=None,
+        name: str | None = None,
     ) -> None:
 
         super().__init__(
@@ -102,6 +103,7 @@ class DSAMultiLatentAttention(Attention):
             attn_mask_type=attn_mask_type,
             cp_comm_type=cp_comm_type,
             pg_collection=pg_collection,
+            name=name,
         )
         self.query_projection_size = self.config.v_head_dim * self.config.num_attention_heads
 
@@ -333,6 +335,7 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
         cp_comm_type: str | None = None,
         model_comm_pgs=None,
         pg_collection=None,
+        name: str | None = None,
     ):
         super().__init__(
             config=config,
@@ -344,6 +347,7 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
             cp_comm_type=cp_comm_type,
             model_comm_pgs=model_comm_pgs,
             pg_collection=pg_collection,
+            name=name,
         )
         q_down_proj_kwargs = {}
         if submodules.linear_q_down_proj in [TELinear]:
