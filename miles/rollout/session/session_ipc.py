@@ -70,6 +70,11 @@ FLAG_LAST = 0x01  # this is the final chunk of its (request_id, direction) body
 MAX_CHUNK_SIZE = 1 << 20  # 1 MiB payload per frame
 MAX_FRAME_SIZE = MAX_CHUNK_SIZE + _HEADER_LEN + 4096  # header + slack
 DEFAULT_MAX_BODY_SIZE = 512 << 20  # 512 MiB reassembled body
+# Cap on the not-yet-sent bytes of all outbound bodies registered with the
+# writer at once. The writer round-robins one chunk per active body per round,
+# so this bounds queued memory; a new body's registration backpressures (awaits)
+# until the budget frees, instead of growing without bound when the peer stalls.
+DEFAULT_MAX_SEND_BUFFER_BYTES = 256 << 20  # 256 MiB of in-flight send payloads
 
 
 class IpcError(Exception):
@@ -104,6 +109,42 @@ class _Reassembler:
         return b"".join(self.parts)
 
 
+class _OutboundBody:
+    """A registered outbound message the writer emits one chunk at a time.
+
+    Holds a REFERENCE to the original payload + a cursor; the per-chunk frame is
+    built only when the writer is about to send it, so the queue never holds a
+    second copy of the whole body. ``remaining`` drives the send-buffer budget.
+    """
+
+    __slots__ = ("request_id", "frame_type", "payload", "offset", "max_chunk_size", "done")
+
+    def __init__(self, request_id: int, frame_type: int, payload: bytes, max_chunk_size: int):
+        self.request_id = request_id
+        self.frame_type = frame_type
+        self.payload = payload
+        self.offset = 0
+        self.max_chunk_size = max_chunk_size
+        self.done = False
+
+    @property
+    def remaining(self) -> int:
+        return len(self.payload) - self.offset
+
+    def next_frame(self) -> bytes:
+        """Build the next chunk frame, advance the cursor, mark ``done`` on the
+        final (FLAG_LAST) chunk. An empty payload still yields one FLAG_LAST."""
+        n = len(self.payload)
+        end = min(self.offset + self.max_chunk_size, n)
+        flags = FLAG_LAST if end >= n else 0
+        chunk = self.payload[self.offset : end]
+        self.offset = end
+        if flags & FLAG_LAST:
+            self.done = True
+        header = _HEADER.pack(self.request_id, self.frame_type, flags) + chunk
+        return _LEN.pack(len(header)) + header
+
+
 class IpcChannel:
     """Framed, multiplexed RPC over one connected socket.
 
@@ -123,6 +164,7 @@ class IpcChannel:
         max_chunk_size: int = MAX_CHUNK_SIZE,
         max_frame_size: int = MAX_FRAME_SIZE,
         max_body_size: int = DEFAULT_MAX_BODY_SIZE,
+        max_send_buffer_bytes: int = DEFAULT_MAX_SEND_BUFFER_BYTES,
     ):
         self._reader = reader
         self._writer = writer
@@ -131,6 +173,7 @@ class IpcChannel:
         self._max_chunk_size = max_chunk_size
         self._max_frame_size = max_frame_size
         self._max_body_size = max_body_size
+        self._max_send_buffer_bytes = max_send_buffer_bytes
 
         self._next_request_id = 1
         self._pending: dict[int, asyncio.Future[bytes]] = {}
@@ -139,7 +182,18 @@ class IpcChannel:
         self._inbound_replies: dict[int, _Reassembler] = {}
         self._handler_tasks: set[asyncio.Task] = set()
 
-        self._send_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+        # Send path: tiny control frames jump a FIFO lane; data bodies register
+        # in an active list the writer round-robins (one chunk each per round) so
+        # no large body monopolizes the stream. Registration backpressures on the
+        # send-buffer budget. _send_event wakes the writer; _send_budget wakes
+        # senders parked on backpressure.
+        self._control_frames: list[bytes] = []
+        self._active_bodies: list[_OutboundBody] = []
+        self._registered_send_bytes = 0
+        self._send_event = asyncio.Event()
+        self._send_budget = asyncio.Event()
+        self._send_budget.set()
+
         self._closed = False
         self._close_exc: BaseException | None = None
 
@@ -173,7 +227,9 @@ class IpcChannel:
 
     async def reply_error(self, request_id: int, message: str) -> None:
         """Send a deterministic error reply for *request_id* (server side)."""
-        self._enqueue_frame(request_id, FRAME_ERROR, FLAG_LAST, message.encode("utf-8")[: self._max_chunk_size])
+        if self._closed:
+            raise IpcChannelClosed("channel closed") from self._close_exc
+        self._enqueue_control(request_id, FRAME_ERROR, FLAG_LAST, message.encode("utf-8")[: self._max_chunk_size])
 
     async def close(self, exc: BaseException | None = None) -> None:
         """Tear the channel down once and fail all pending requests."""
@@ -194,46 +250,64 @@ class IpcChannel:
     # ---- send path (single writer) --------------------------------------
 
     async def _send_body(self, request_id: int, frame_type: int, payload: bytes) -> None:
-        """Split *payload* into chunk frames and queue them for the writer.
+        """Register *payload* as an outbound body for the round-robin writer.
 
-        Multi-chunk bodies yield to the loop between chunks so a concurrent
-        small reply enqueues its single frame right behind the current chunk,
-        not behind every chunk of a large body — this is what prevents
-        head-of-line blocking. Empty payloads still send one FLAG_LAST frame so
-        the peer sees a terminated body. The single writer task drains the
-        shared queue, so length-prefix + payload never interleave on the wire.
+        The whole body is NOT pre-sliced into queued frame copies; only a
+        reference + cursor is registered, and the writer emits one chunk per
+        active body per round so a large body never blocks small replies (no HOL
+        blocking) and queued memory is the bodies themselves, not a second copy.
+        Registration backpressures on the send-buffer budget so total in-flight
+        send bytes stay bounded even if the peer/writer stalls.
         """
         if self._closed:
             raise IpcChannelClosed("channel closed") from self._close_exc
         n = len(payload)
-        if n == 0:
-            self._enqueue_frame(request_id, frame_type, FLAG_LAST, b"")
-            return
-        offset = 0
-        while offset < n:
-            if self._closed:
-                raise IpcChannelClosed("channel closed") from self._close_exc
-            end = min(offset + self._max_chunk_size, n)
-            flags = FLAG_LAST if end >= n else 0
-            self._enqueue_frame(request_id, frame_type, flags, payload[offset:end])
-            offset = end
-            if offset < n:
-                # Yield so other senders' frames interleave (no HOL blocking).
-                await asyncio.sleep(0)
+        # Backpressure: wait until this body fits the send buffer (a body larger
+        # than the whole budget is allowed in alone so it can still make progress).
+        while (
+            not self._closed
+            and self._registered_send_bytes > 0
+            and self._registered_send_bytes + n > self._max_send_buffer_bytes
+        ):
+            self._send_budget.clear()
+            await self._send_budget.wait()
+        if self._closed:
+            raise IpcChannelClosed("channel closed") from self._close_exc
+        self._active_bodies.append(_OutboundBody(request_id, frame_type, payload, self._max_chunk_size))
+        self._registered_send_bytes += n
+        self._send_event.set()
 
-    def _enqueue_frame(self, request_id: int, frame_type: int, flags: int, chunk: bytes) -> None:
-        body = _HEADER.pack(request_id, frame_type, flags) + chunk
-        frame = _LEN.pack(len(body)) + body
-        self._send_queue.put_nowait(frame)
+    def _enqueue_control(self, request_id: int, frame_type: int, flags: int, chunk: bytes) -> None:
+        """Queue a single tiny control frame (error / no-handler) on the priority
+        FIFO lane; non-blocking, callable from the sync reader path."""
+        header = _HEADER.pack(request_id, frame_type, flags) + chunk
+        self._control_frames.append(_LEN.pack(len(header)) + header)
+        self._send_event.set()
 
     async def _writer_loop(self) -> None:
         try:
             while True:
-                frame = await self._send_queue.get()
-                if frame is None:  # sentinel: drain-and-exit
-                    break
-                self._writer.write(frame)
-                await self._writer.drain()
+                if not self._control_frames and not self._active_bodies:
+                    self._send_event.clear()
+                    if not self._control_frames and not self._active_bodies:
+                        await self._send_event.wait()
+                    continue
+                # Control frames first (FIFO), then one chunk per active body
+                # (round-robin) so no large body monopolizes the stream.
+                while self._control_frames:
+                    self._writer.write(self._control_frames.pop(0))
+                    await self._writer.drain()
+                freed = 0
+                for body in list(self._active_bodies):
+                    before = body.remaining
+                    self._writer.write(body.next_frame())
+                    await self._writer.drain()
+                    freed += before - body.remaining
+                    if body.done:
+                        self._active_bodies.remove(body)
+                if freed and self._registered_send_bytes > 0:
+                    self._registered_send_bytes -= freed
+                    self._send_budget.set()  # wake senders parked on backpressure
         except (ConnectionError, OSError) as exc:
             self._teardown(IpcChannelClosed(f"writer failed: {exc!r}"))
         except asyncio.CancelledError:
@@ -311,7 +385,7 @@ class IpcChannel:
     def _spawn_handler(self, request_id: int, payload: bytes) -> None:
         if self._request_handler is None:
             # No server role on this side: tell the peer deterministically.
-            self._send_queue.put_nowait(_LEN.pack(_HEADER_LEN) + _HEADER.pack(request_id, FRAME_ERROR, FLAG_LAST))
+            self._enqueue_control(request_id, FRAME_ERROR, FLAG_LAST, b"")
             return
         task = asyncio.create_task(self._run_handler(request_id, payload))
         self._handler_tasks.add(task)
@@ -345,6 +419,13 @@ class IpcChannel:
         self._pending.clear()
         self._inbound_requests.clear()
         self._inbound_replies.clear()
+        # Drop queued sends and wake any sender parked on the send-buffer budget
+        # so it observes the closed channel instead of hanging.
+        self._active_bodies.clear()
+        self._control_frames.clear()
+        self._registered_send_bytes = 0
+        self._send_event.set()
+        self._send_budget.set()
         for task in (self._reader_task, self._writer_task):
             task.cancel()
         for task in list(self._handler_tasks):

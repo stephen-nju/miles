@@ -277,6 +277,69 @@ def test_large_get_records_does_not_stall_small_request():
                 supervisor.shutdown()
 
 
+def test_large_get_serialization_does_not_block_same_worker():
+    """The big GET-records serialization (model_dump + json.dumps, 10s of MiB)
+    is offloaded off the event loop, so a SMALL GET on a DIFFERENT session that
+    happens to live on the SAME worker still returns promptly while the big one
+    serializes. Forces both sessions onto one worker so the small request can
+    only be served by the loop that is busy producing the big body.
+    """
+
+    def _patch_big_r3():
+        from miles.utils.test_utils.mock_sglang_server import MockSGLangServer
+
+        original = MockSGLangServer._compute_chat_completions_response
+
+        def patched(self, payload: dict) -> dict:
+            response = original(self, payload)
+            choice = response["choices"][0]
+            # ~tens of MiB once serialized, so an inline dump would visibly block.
+            choice["meta_info"]["routed_experts"] = [list(range(256)) for _ in range(20000)]
+            return response
+
+        return patch.object(MockSGLangServer, "_compute_chat_completions_response", new=patched)
+
+    with with_mock_server(model_name=HF_CHECKPOINT, process_fn=_default_process_fn) as backend:
+        with _patch_big_r3():
+            supervisor, url = _start_supervisor(_args(), backend.url)
+            try:
+                # Two sessions on the SAME worker.
+                big_sid = _create(url)
+                small_sid = None
+                for _ in range(64):
+                    cand = _create(url)
+                    if worker_index_for_session(cand, N_WORKERS) == worker_index_for_session(big_sid, N_WORKERS):
+                        small_sid = cand
+                        break
+                assert small_sid is not None, "could not place two sessions on the same worker"
+
+                # Give big_sid a large R3 turn; small_sid stays empty (tiny GET).
+                assert _chat(url, big_sid, timeout=20.0).status_code == 200
+
+                big_done = {}
+
+                def _big_get():
+                    r = requests.get(f"{url}/sessions/{big_sid}", timeout=30.0)
+                    big_done["status"] = r.status_code
+                    big_done["bytes"] = len(r.content)
+
+                t = threading.Thread(target=_big_get)
+                t.start()
+                # Small GET on the SAME worker must return promptly even while the
+                # big body serializes (proves the dump is off the loop).
+                small_t0 = time.time()
+                small = requests.get(f"{url}/sessions/{small_sid}", timeout=10.0)
+                small_elapsed = time.time() - small_t0
+                assert small.status_code == 200, small.text
+                assert small_elapsed < 5.0, f"small GET stalled behind big-GET serialization: {small_elapsed:.2f}s"
+
+                t.join(timeout=30.0)
+                assert big_done.get("status") == 200
+                assert big_done.get("bytes", 0) > (10 << 20), "big GET was not actually large"
+            finally:
+                supervisor.shutdown()
+
+
 def test_worker_death_triggers_fail_fast():
     """Killing one worker process must make the supervisor fail fast (record the
     failure + tear the whole group down) with no leftover worker/router procs."""

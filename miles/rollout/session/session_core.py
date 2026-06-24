@@ -17,6 +17,7 @@ passthrough — lives here, not in the adapter.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -78,6 +79,11 @@ def _json_response(status_code: int, payload) -> CoreResponse:
     )
 
 
+def _dump_get_session_body(payload: GetSessionResponse) -> bytes:
+    # Runs in a worker thread (off the event loop) — the records may be 100+ MiB.
+    return json.dumps(payload.model_dump(), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
 def _proxy_result_to_core_response(result: dict) -> CoreResponse:
     """Render an upstream proxy result dict into a passthrough CoreResponse.
 
@@ -109,19 +115,29 @@ def _reject_json_constant(value: str):
 _R3_KEYS = ("routed_experts", "indexer_topk")
 
 
+def _strip_r3_from_choice(choice: dict) -> dict:
+    """Return ``choice`` with R3 keys removed from its meta_info (shallow copy
+    only when something is stripped, else the original dict unchanged)."""
+    meta_info = choice.get("meta_info")
+    if isinstance(meta_info, dict) and any(k in meta_info for k in _R3_KEYS):
+        stripped = {k: v for k, v in meta_info.items() if k not in _R3_KEYS}
+        return {**choice, "meta_info": stripped}
+    return choice
+
+
 def _client_chat_response(result: dict, response: dict) -> CoreResponse:
     """Build the client-facing chat CoreResponse with R3 blobs stripped.
 
     ``response`` is the already-parsed full upstream dict (R3 still present);
     the stored SessionRecord keeps it intact. Here we re-serialize a shallow
-    copy of choices[0].meta_info minus the R3 keys — no re-parse, and the big
-    blobs never cross to the client.
+    copy of EVERY choice's meta_info minus the R3 keys — no re-parse, and the
+    big blobs never cross to the client (choices[1:] would otherwise leak R3).
     """
-    choice = response["choices"][0]
-    meta_info = choice.get("meta_info")
-    if isinstance(meta_info, dict) and any(k in meta_info for k in _R3_KEYS):
-        stripped = {k: v for k, v in meta_info.items() if k not in _R3_KEYS}
-        response = {**response, "choices": [{**choice, "meta_info": stripped}, *response["choices"][1:]]}
+    choices = response.get("choices")
+    if isinstance(choices, list):
+        stripped_choices = [_strip_r3_from_choice(c) if isinstance(c, dict) else c for c in choices]
+        if any(sc is not c for sc, c in zip(stripped_choices, choices, strict=True)):
+            response = {**response, "choices": stripped_choices}
     headers = {
         k: v
         for k, v in result["headers"].items()
@@ -264,7 +280,22 @@ class SessionCore:
             return _json_response(409, {"error": str(exc)})
         return _json_response(200, {"session_id": session_id})
 
-    async def get_session(self, session_id: str) -> CoreResponse:
+    async def get_session(
+        self,
+        session_id: str,
+        parse_gate: Callable[[], AbstractAsyncContextManager] | None = None,
+    ) -> CoreResponse:
+        """Return a session's full records (R3 included).
+
+        The records can be 100+ MiB, and ``model_dump()`` + ``json.dumps()`` are
+        synchronous CPU; running them inline would block this worker's event
+        loop and stall concurrent small/health requests. So the serialization is
+        offloaded to a thread (bounded by ``parse_gate`` when the worker passes
+        one). Session state is read on the loop first, then handed off as a plain
+        object so the thread touches no shared session state.
+        """
+        if parse_gate is None:
+            parse_gate = contextlib.nullcontext
         try:
             session = self.registry.get_session(session_id)
             metadata = {}
@@ -278,9 +309,16 @@ class SessionCore:
             metadata["accumulated_token_ids"] = session.token_ids
             metadata["max_trim_tokens"] = self.registry.tito_tokenizer.max_trim_tokens
             payload = GetSessionResponse(session_id=session_id, records=session.records, metadata=metadata)
-            return _json_response(200, payload.model_dump())
         except SessionError as exc:
             return self._error_response(exc)
+        async with parse_gate():
+            body = await asyncio.to_thread(_dump_get_session_body, payload)
+        return CoreResponse(
+            status_code=200,
+            headers={"content-type": "application/json"},
+            body=body,
+            media_type="application/json",
+        )
 
     async def delete_session(self, session_id: str) -> CoreResponse:
         try:

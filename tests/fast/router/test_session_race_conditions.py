@@ -1080,6 +1080,26 @@ class TestBuildProxyResponse:
         assert "content-encoding" not in lowered
         assert resp.headers.get("content-length", str(len(body))) == str(len(body))
 
+    def test_pretty_printed_json_body_passes_through_verbatim(self):
+        """A pretty-printed (non-canonical) upstream JSON body is relayed
+        BYTE-FOR-BYTE, not re-serialized into canonical compact form.
+
+        The pre-refactor build_proxy_response did json.loads -> JSONResponse,
+        which canonicalized JSON (compact separators). The refactor makes the
+        proxy path a true byte passthrough so workers=1 and the multi-process
+        router (contract item 11: the router NEVER json.loads the relayed body)
+        behave identically. This pins that deliberate behavior.
+        """
+        server = self._server()
+        body = b'{\n  "object": "list",\n  "data": [\n    1,\n    2\n  ]\n}'
+        result = {
+            "response_body": body,
+            "status_code": 200,
+            "headers": {"content-type": "application/json"},
+        }
+        resp = server.build_proxy_response(result)
+        assert resp.body == body  # verbatim — NOT recompacted to {"object":"list",...}
+
     def test_non_json_200_body_and_media_type_preserved(self):
         server = self._server()
         body = b"plain text"
@@ -1204,6 +1224,31 @@ class TestPassthroughFidelity:
             ]["choices"][0]["meta_info"]
             assert record_meta["routed_experts"] == [[1, 2, 3]] * client_meta["completion_tokens"]
             assert record_meta["indexer_topk"] == [[4, 5]] * client_meta["completion_tokens"]
+
+    def test_r3_strip_covers_every_choice_not_just_choices_0(self):
+        """The client body strips R3 from EVERY choice's meta_info, not only
+        choices[0] — otherwise choices[1:] leak routed_experts/indexer_topk."""
+        import json
+
+        from miles.rollout.session.session_core import _client_chat_response
+
+        response = {
+            "object": "chat.completion",
+            "choices": [
+                {"message": {"content": "a"}, "meta_info": {"completion_tokens": 1, "routed_experts": [[1]]}},
+                {"message": {"content": "b"}, "meta_info": {"completion_tokens": 1, "indexer_topk": [[2]]}},
+            ],
+        }
+        result = {"status_code": 200, "headers": {"content-type": "application/json"}}
+        core_resp = _client_chat_response(result, response)
+        client = json.loads(core_resp.body)
+        for ch in client["choices"]:
+            assert "routed_experts" not in ch["meta_info"]
+            assert "indexer_topk" not in ch["meta_info"]
+            assert ch["meta_info"]["completion_tokens"] == 1
+        # The source dict is untouched (record keeps the full R3).
+        assert response["choices"][0]["meta_info"]["routed_experts"] == [[1]]
+        assert response["choices"][1]["meta_info"]["indexer_topk"] == [[2]]
 
 
 class TestResponseTokenIdValidation:

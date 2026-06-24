@@ -17,10 +17,14 @@ Design (m3-design-contract §"Router"):
   respond — this is also the readiness signal the supervisor waits on.
 * Cancellation: a client disconnect must NOT cancel the worker's in-flight chat
   task (today's race-test semantics: the handler continues and may commit). The
-  router ``await``\\s the reply under :func:`asyncio.shield` so a handler cancel
-  still drains the IPC reply rather than abandoning the worker mid-send.
+  IPC request runs as a router-owned task and the handler ``await``\\s it under
+  :func:`asyncio.shield`, so a handler cancel still drains the IPC reply rather
+  than abandoning the worker mid-send.
 * Per-worker backpressure: a bounded in-flight counter returns 503 when a worker
-  is saturated instead of growing router futures unbounded.
+  is saturated. The slot is freed in the IPC task's done-callback (when the
+  worker's reply actually arrives), NOT on handler cancellation — so a
+  disconnected request keeps counting against the cap while it still consumes
+  worker/httpx resources, instead of leaking the count.
 
 Stdlib + FastAPI/uvicorn only; the parent spawns this as a process target.
 """
@@ -99,26 +103,52 @@ class SessionRouter:
         self._health_timeout = getattr(args, "session_router_health_timeout", DEFAULT_HEALTH_TIMEOUT)
         self._max_inflight = max_inflight
         self._inflight = [0] * self._n_worker
+        # Router-owned IPC request tasks: a client disconnect cancels the HTTP
+        # handler but NOT these, so the worker still drains its reply. Held here
+        # so they are never an unobserved/GC'd task; each removes itself + frees
+        # its in-flight slot in its done-callback.
+        self._ipc_tasks: set[asyncio.Task] = set()
 
     def _channel_for(self, session_id: str):
         return self._channels[worker_index_for_session(session_id, self._n_worker)]
 
-    async def _dispatch(self, worker_idx: int, payload: bytes) -> Response:
-        """Send *payload* to one worker and render its reply, shielding the IPC
-        wait from client-disconnect cancellation so the worker still drains.
+    def _spawn_ipc_request(self, worker_idx: int, payload: bytes) -> asyncio.Task[bytes]:
+        """Start a worker IPC request as a router-owned task and account for it.
 
-        Backpressure is admission-checked per worker before the future is even
-        registered, so a saturated worker fast-fails 503 here.
+        The in-flight slot is taken here and released in the done-callback (NOT
+        when the awaiting HTTP handler is cancelled), so a disconnected client's
+        request keeps counting against the per-worker cap until the worker's
+        reply actually arrives — disconnect no longer leaks the count nor frees
+        worker/httpx resources early.
+        """
+        self._inflight[worker_idx] += 1
+        task = asyncio.create_task(self._channels[worker_idx].request(payload))
+        self._ipc_tasks.add(task)
+
+        def _done(t: asyncio.Task, _idx=worker_idx) -> None:
+            self._ipc_tasks.discard(t)
+            self._inflight[_idx] -= 1
+            if not t.cancelled():
+                t.exception()  # retrieve to avoid "exception never retrieved" if abandoned
+
+        task.add_done_callback(_done)
+        return task
+
+    async def _dispatch(self, worker_idx: int, payload: bytes) -> Response:
+        """Send *payload* to one worker and render its reply.
+
+        The IPC request runs as a router-owned task (see ``_spawn_ipc_request``);
+        a cancel of THIS coroutine (client disconnect) is shielded so it does
+        not cancel the worker's chat task — the worker still drains its reply.
+
+        Backpressure is admission-checked per worker before the task is started,
+        so a saturated worker fast-fails 503 here.
         """
         if self._inflight[worker_idx] >= self._max_inflight:
             return _overloaded_response()
-        channel = self._channels[worker_idx]
-        self._inflight[worker_idx] += 1
+        task = self._spawn_ipc_request(worker_idx, payload)
         try:
-            # shield: a cancel of THIS coroutine (client disconnect) must not
-            # cancel the worker's chat task; the request future still resolves
-            # and the worker's reply is drained.
-            reply = await asyncio.shield(channel.request(payload))
+            reply = await asyncio.shield(task)
         except IpcChannelClosed:
             return _channel_closed_response()
         except IpcError as exc:
@@ -128,8 +158,6 @@ class SessionRouter:
                 status_code=502,
                 media_type="application/json",
             )
-        finally:
-            self._inflight[worker_idx] -= 1
         return _to_starlette_response(decode_core_response(reply))
 
     async def _dispatch_session(self, session_id: str, payload: bytes) -> Response:
@@ -206,10 +234,22 @@ class SessionRouter:
         ping = encode_request(OP_HEALTH)
 
         async def _ping(channel) -> bool:
+            # Own the request task so a timeout here does not abandon an
+            # unobserved IPC task (whose later exception would be GC-logged); on
+            # timeout we stop waiting but the task drains and self-cleans below.
+            task = asyncio.create_task(channel.request(ping))
+            self._ipc_tasks.add(task)
+
+            def _done(t: asyncio.Task) -> None:
+                self._ipc_tasks.discard(t)
+                if not t.cancelled():
+                    t.exception()
+
+            task.add_done_callback(_done)
             try:
-                await asyncio.wait_for(asyncio.shield(channel.request(ping)), timeout=self._health_timeout)
+                await asyncio.wait_for(asyncio.shield(task), timeout=self._health_timeout)
                 return True
-            except (TimeoutError, asyncio.TimeoutError, IpcError):
+            except (TimeoutError, asyncio.TimeoutError, IpcError, IpcChannelClosed):
                 return False
 
         results = await asyncio.gather(*(_ping(ch) for ch in self._channels))

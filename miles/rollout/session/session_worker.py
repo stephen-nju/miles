@@ -240,7 +240,7 @@ class SessionWorker:
         if op == OP_CREATE_ID:
             return await self.core.create_session_with_id(session_id)
         if op == OP_GET:
-            return await self.core.get_session(session_id)
+            return await self.core.get_session(session_id, parse_gate=self._parse_gate)
         if op == OP_DELETE:
             return await self.core.delete_session(session_id)
         if op == OP_CHAT:

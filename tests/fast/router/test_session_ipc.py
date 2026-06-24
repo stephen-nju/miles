@@ -84,43 +84,80 @@ async def test_out_of_order_multiplexing_no_head_of_line_block():
 
 @pytest.mark.asyncio
 async def test_large_body_chunks_interleave_with_a_small_body():
-    """Cooperative chunking interleaves: when a large body and a small body are
-    sent concurrently on one channel, the small body's single frame lands in
-    the writer queue BEFORE all of the large body's chunks — so the small
-    reply is never head-of-line blocked behind the full large body.
+    """Round-robin send: when a large body and a small body are registered
+    concurrently on one channel, the writer emits ONE chunk per active body per
+    round, so the small body's single frame goes out within the first round —
+    never head-of-line blocked behind the full large body.
 
-    Inspects the framed queue directly (the writer is paused) so the property
-    holds deterministically regardless of socket-buffer/drain timing.
+    Reads the on-wire frame order off the peer socket so the property holds
+    against the real writer (no white-box queue peeking).
     """
+    import struct as _struct
 
-    s1, _s2 = socket.socketpair()
+    s1, s2 = socket.socketpair()
     r1, w1 = await asyncio.open_unix_connection(sock=s1)
+    s2.setblocking(False)
     chan = IpcChannel(r1, w1, max_chunk_size=64)
-    # Pause the writer so we can observe the queued frame order it would send.
-    chan._writer_task.cancel()
     try:
-        # Large body = many 64B chunks (request_id 100); small body = 1 frame
-        # (request_id 200). Run them concurrently.
-        big = bytes(64 * 20)  # 20 chunks
+        # Large body = 20 chunks (request_id 100); small body = 1 frame (200),
+        # registered AFTER the big one — round-robin must still interleave it.
+        big = bytes(64 * 20)
         await asyncio.gather(
             chan._send_body(100, 2, big),
             chan._send_body(200, 2, b"tiny"),
         )
-        # Collect queued frames' request_ids in send order.
-        ids = []
-        while not chan._send_queue.empty():
-            frame = chan._send_queue.get_nowait()
-            if frame is None:
-                continue
-            # request_id is the u64 right after the u32 length prefix.
-            ids.append(int.from_bytes(frame[4:12], "big"))
-        assert 200 in ids, "small body never queued"
-        # The small body's frame precedes the LAST big-body chunk: it interleaved.
+        # Let the writer drain a few rounds onto the wire.
+        for _ in range(10):
+            await asyncio.sleep(0)
+        loop = asyncio.get_event_loop()
+        raw = await loop.sock_recv(s2, 1 << 20)
+        # Parse frames off the wire, collecting request_ids in send order.
+        ids, off = [], 0
+        while off + 4 <= len(raw):
+            (length,) = _struct.unpack_from(">I", raw, off)
+            off += 4
+            if off + length > len(raw):
+                break
+            ids.append(int.from_bytes(raw[off : off + 8], "big"))
+            off += length
+        assert 200 in ids, "small body never sent"
         last_big = max(i for i, rid in enumerate(ids) if rid == 100)
         small_at = ids.index(200)
-        assert small_at < last_big, f"small body queued behind the whole large body: {ids}"
+        assert small_at < last_big, f"small body sent behind the whole large body: {ids}"
+        # Round-robin: the small frame goes out on the FIRST round (after the
+        # big body's first chunk), not after all 20 big chunks.
+        assert small_at <= 1, f"small body not interleaved on the first round: {ids}"
     finally:
         chan._teardown(IpcChannelClosed("test done"))
+        await chan.wait_closed()
+        s2.close()
+
+
+@pytest.mark.asyncio
+async def test_send_buffer_backpressures_when_peer_stalls():
+    """A registered body's not-yet-sent bytes count against a bounded send
+    buffer: with the writer paused (peer never reads), a second large body's
+    _send_body blocks until the budget frees, so queued send memory stays
+    bounded instead of growing with total in-flight body bytes."""
+
+    s1, _s2 = socket.socketpair()
+    r1, w1 = await asyncio.open_unix_connection(sock=s1)
+    # 4 KiB send budget; 3 KiB bodies. The first fits (alone), the second must
+    # wait for the first to drain — but the writer is paused, so it stays parked.
+    chan = IpcChannel(r1, w1, max_chunk_size=512, max_send_buffer_bytes=4096)
+    chan._writer_task.cancel()  # freeze the writer: nothing drains
+    try:
+        await chan._send_body(1, 2, bytes(3072))  # fits into an empty buffer
+        assert chan._registered_send_bytes == 3072
+        second = asyncio.create_task(chan._send_body(2, 2, bytes(3072)))
+        await asyncio.sleep(0.02)
+        assert not second.done(), "second body must backpressure while the buffer is full"
+        assert chan._registered_send_bytes == 3072, "second body must not register until budget frees"
+        # Tearing down wakes the parked sender, which observes the closed channel.
+        chan._teardown(IpcChannelClosed("test done"))
+        with pytest.raises(IpcChannelClosed):
+            await second
+    finally:
         await chan.wait_closed()
 
 

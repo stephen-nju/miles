@@ -199,8 +199,17 @@ class SessionServerSupervisor:
 
                 def _handler(signum, frame, _prev=prev):
                     self.shutdown()
+                    # Chain to the previous disposition so the SIGNAL still has
+                    # its original effect on THIS process: a callable runs; an
+                    # ignored signal stays ignored; the default (SIG_DFL) must
+                    # actually terminate us — restore SIG_DFL and re-raise, else
+                    # a Ray/cluster SIGTERM would reap our children but leave the
+                    # rollout process alive.
                     if callable(_prev) and _prev not in (signal.SIG_DFL, signal.SIG_IGN):
                         _prev(signum, frame)
+                    elif _prev == signal.SIG_DFL:
+                        signal.signal(signum, signal.SIG_DFL)
+                        os.kill(os.getpid(), signum)
 
                 signal.signal(sig, _handler)
             except (ValueError, OSError):
