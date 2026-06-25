@@ -23,6 +23,45 @@ from miles.utils.replay_base import routing_replay_manager
 logger = logging.getLogger(__name__)
 
 
+# TransformerConfig knobs that come from CLI args and that bridge model providers do NOT set
+# themselves (so they must be re-injected onto a bridge-built provider, which skips
+# core_transformer_config_from_args). See the bridge branch of get_model_provider_func for the
+# full rationale and what is deliberately excluded. Add new training-infra flags here, not as
+# one-off scattered assignments, so the silent-default class stays closed.
+_BRIDGE_RUNTIME_OVERRIDE_FIELDS = (
+    # parallelism / sharding
+    "tensor_model_parallel_size",
+    "pipeline_model_parallel_size",
+    "expert_model_parallel_size",
+    "expert_tensor_parallel_size",
+    "sequence_parallel",
+    "context_parallel_size",
+    # loss / sequence handling
+    "calculate_per_token_loss",  # CP>1 VL models assert this
+    "variable_seq_lengths",
+    # numerics (training infra, not model-defining)
+    "attention_softmax_in_fp32",
+    "fp32_residual_connection",
+    "deterministic_mode",
+    # activation recompute (silently dropped before -> no checkpointing -> OOM at long context)
+    "recompute_granularity",
+    "recompute_method",
+    "recompute_num_layers",
+    "recompute_modules",
+    # activation / memory offload
+    "cpu_offloading",
+    "cpu_offloading_num_layers",
+    "distribute_saved_activations",
+    # communication overlap
+    "tp_comm_overlap",
+    # fp8
+    "fp8",
+    "fp8_recipe",
+    # attention kernel selection
+    "attention_backend",
+)
+
+
 # Adapt from https://github.com/volcengine/verl/blob/c3b20575d2bc815fcccd84bddb4c0401fc4b632b/verl/models/llama/megatron/layers/parallel_linear.py#L82
 class LinearForLastLayer(torch.nn.Linear):
     def __init__(
@@ -91,17 +130,21 @@ def get_model_provider_func(
 
         bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
         provider = bridge.to_megatron_provider(load_weights=False)
-        # TODO: we should not manually set this...
-        provider.tensor_model_parallel_size = args.tensor_model_parallel_size
-        provider.pipeline_model_parallel_size = args.pipeline_model_parallel_size
-        provider.expert_model_parallel_size = args.expert_model_parallel_size
-        provider.expert_tensor_parallel_size = args.expert_tensor_parallel_size
-        provider.sequence_parallel = args.sequence_parallel
-        provider.context_parallel_size = args.context_parallel_size
-        # CP>1 VL models assert this; bridge configs skip core_transformer_config_from_args.
-        provider.calculate_per_token_loss = args.calculate_per_token_loss
-        provider.attention_softmax_in_fp32 = args.attention_softmax_in_fp32
-        provider.variable_seq_lengths = args.variable_seq_lengths
+        # Bridge mode builds the model ARCHITECTURE from the HF config and skips Megatron's
+        # core_transformer_config_from_args, so CLI args never reach the provider config on their
+        # own. Re-inject the training/parallelism/memory/numerics knobs that come from args and that
+        # the provider does not set itself; otherwise they silently keep TransformerConfig defaults
+        # (e.g. recompute_granularity=None -> activation checkpointing never runs -> OOM at long ctx).
+        # This allow-list (_BRIDGE_RUNTIME_OVERRIDE_FIELDS) deliberately EXCLUDES:
+        #   - architecture fields (hidden_size/num_layers/...; the bridge sets these from HF);
+        #   - dtype (bf16/params_dtype; the bridge derives these from the checkpoint torch_dtype);
+        #   - provider-deliberate fields (apply_rope_fusion=False for mRoPE, fusion flags,
+        #     add_bias_linear, ...) the per-model provider sets on purpose -- overriding those would
+        #     reintroduce silent correctness bugs.
+        for _field in _BRIDGE_RUNTIME_OVERRIDE_FIELDS:
+            if hasattr(args, _field) and hasattr(provider, _field):
+                setattr(provider, _field, getattr(args, _field))
+        # Translated arg name / only-when-explicitly-set fields (kept out of the blind loop).
         if hasattr(args, "moe_token_dispatcher_type"):
             provider.moe_token_dispatcher_type = args.moe_token_dispatcher_type
         if getattr(args, "decoder_first_pipeline_num_layers", None) is not None:
