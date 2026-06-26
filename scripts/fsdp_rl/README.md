@@ -18,6 +18,11 @@ Each script just sets a few env vars and sources `common.sh`. Override paths wit
 `wandb` turns on automatically when `WANDB_API_KEY` is set. Multi-node scripts print the
 `ray start --address=...` line the worker nodes need.
 
+**CPU offload is optional** — it trades step speed for GPU memory. The bigger models default to
+`CPU_OFFLOAD=1` (optimizer/params/grads on CPU), but if a model fits on its GPUs without it, run with
+`CPU_OFFLOAD=0` for faster steps (e.g. `CPU_OFFLOAD=0 bash scripts/fsdp_rl/qwen3-30b-a3b.sh`), or bump
+`GPUS_PER_NODE`/`NNODES` so it fits and drop the offload.
+
 ## Models & GPU sizing
 
 GPU counts are sized for FSDP RL (bf16 weights+grads on GPU, AdamW state on CPU when
