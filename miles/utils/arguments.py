@@ -3048,6 +3048,9 @@ def _validate_deploy_component(args: argparse.Namespace) -> None:
 
     if component is DeployComponent.TRAINER:
         _validate_single_deployed_trainer(args)
+        assert not (
+            args.debug_rollout_only and cluster_backend is ClusterBackend.RAY
+        ), f"--debug-rollout-only needs an inference side, which --deploy-component {component.value} has none"
 
     if component is not DeployComponent.INFERENCE:
         _validate_shared_object_store(args, component=component)
