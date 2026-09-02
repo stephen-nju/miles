@@ -4,6 +4,7 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.e2e.common_dirs import get_test_data_dir, get_test_model_dir
 
 from miles.utils.external_utils import command_utils
+from miles.utils.object_store import ObjectStoreBackend
 from miles.utils.workers.types import WorkerCommBackend
 
 register_cuda_ci(est_time=400, suite="stage-c-8-gpu-h100", labels=["short", "mooncake"])
@@ -18,6 +19,18 @@ MODEL_TYPE = "qwen2.5-0.5B"
 NUM_GPUS = 4 if FEW_GPU else 8
 
 
+def entrypoint(
+    *,
+    comm_backend: WorkerCommBackend,
+    object_store_backend: ObjectStoreBackend = ObjectStoreBackend.MOONCAKE,
+    test_file: str,
+) -> None:
+    prepare()
+    for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
+        os.environ.pop(proxy_var, None)
+    execute(comm_backend=comm_backend, object_store_backend=object_store_backend, test_file=test_file)
+
+
 def prepare():
     U = command_utils.default_config().create_backend()
     U.exec_command_cpu(f"mkdir -p {MODEL_DIR} {DATA_DIR}")
@@ -25,7 +38,12 @@ def prepare():
     U.hf_download_dataset("zhuzilin/gsm8k", data_dir=DATA_DIR)
 
 
-def execute(*, comm_backend: WorkerCommBackend, test_file: str) -> None:
+def execute(
+    *,
+    comm_backend: WorkerCommBackend,
+    object_store_backend: ObjectStoreBackend = ObjectStoreBackend.MOONCAKE,
+    test_file: str,
+) -> None:
     U = command_utils.default_config().create_backend()
     ckpt_args = f"--hf-checkpoint {MODEL_DIR}/{MODEL_NAME}/ " f"--ref-load {MODEL_DIR}/{MODEL_NAME}/ "
 
@@ -109,9 +127,15 @@ def execute(*, comm_backend: WorkerCommBackend, test_file: str) -> None:
 
     worker_comm_args = "" if comm_backend is WorkerCommBackend.RAY else f"--worker-comm-backend {comm_backend.value} "
 
+    object_store_args = (
+        f"--object-store-backend {ObjectStoreBackend.RAY.value} "
+        if object_store_backend is ObjectStoreBackend.RAY
+        else command_utils.get_mooncake_object_store_args()
+    )
+
     train_args = (
         f"{ckpt_args} "
-        f"{command_utils.get_mooncake_object_store_args()} "
+        f"{object_store_args} "
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
@@ -133,7 +157,4 @@ def execute(*, comm_backend: WorkerCommBackend, test_file: str) -> None:
 
 
 if __name__ == "__main__":
-    prepare()
-    for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
-        os.environ.pop(proxy_var, None)
-    execute(comm_backend=WorkerCommBackend.RAY, test_file=__file__)
+    entrypoint(comm_backend=WorkerCommBackend.RAY, test_file=__file__)

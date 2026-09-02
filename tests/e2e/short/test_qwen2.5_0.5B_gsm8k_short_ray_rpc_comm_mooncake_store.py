@@ -1,5 +1,4 @@
 import importlib.util
-import os
 from pathlib import Path
 from types import ModuleType
 
@@ -18,7 +17,8 @@ def _load_base_test() -> ModuleType:
 
 if __name__ == "__main__":
     base = _load_base_test()
-    base.prepare()
-    for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
-        os.environ.pop(proxy_var, None)
-    base.execute(comm_backend=base.WorkerCommBackend.RPC, test_file=__file__)
+    base.entrypoint(
+        comm_backend=base.WorkerCommBackend.RPC,
+        object_store_backend=base.ObjectStoreBackend.MOONCAKE,
+        test_file=__file__,
+    )
