@@ -283,6 +283,9 @@ def _assert_external_trainer_in_run(identity: DeploymentIdentity, *, args, train
         f"trainer {trainer_id!r} answers as deployment {identity.deploy_instance_id!r}; "
         f"{TRAINER_CONTROLLER_ADDRS_FLAG} entries are keyed by trainer id"
     )
+    assert (
+        identity.trainer_id == trainer_id
+    ), f"{TRAINER_CONTROLLER_ADDRS_FLAG} keys trainer {identity.trainer_id!r} under {trainer_id!r}"
 
 
 # TODO: move (when reorganizing files)
